@@ -371,7 +371,7 @@ See `CONTRIBUTING.md` for contributor documentation:
 See `RELEASING.md` for maintainer documentation:
 - Release methods (automatic, manual, hotfix)
 - Verification commands for attestations and checksums
-- Cloud Run deployment and rollback procedures
+- Demo API server deployment and rollback procedures (example deployment)
 - Emergency hotfix procedure
 
 See `.github/copilot-instructions.md` for extended technical documentation:

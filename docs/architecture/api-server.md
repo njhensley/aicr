@@ -523,18 +523,19 @@ curl http://localhost:8080/ready
 curl http://localhost:8080/metrics
 ```
 
-## Production Deployment
+## Demo API Server Deployment
 
-### Google Cloud Run Deployment
+> **Note**: This section describes the **demonstration deployment** of the `eidosd` API server for testing and development purposes only. It is not a production service. Users should self-host the `eidosd` API server in their own infrastructure for production use. See the [Kubernetes Deployment](#kubernetes-deployment) section below for deployment guidance.
 
-The API server is deployed to Google Cloud Run with the following configuration:
+### Example: Google Cloud Run
 
-**Live Service:**
-- **URL**: http://localhost:8080
+The demo API server is deployed to Google Cloud Run as an example of how to deploy `eidosd`:
+
+**Demo Configuration:**
 - **Platform**: Google Cloud Run (fully managed serverless)
-- **Authentication**: Public access
+- **Authentication**: Public access (for demo purposes)
 - **Auto-scaling**: 0-100 instances based on load
-- **Region**: Multi-region for high availability
+- **Region**: `us-west1`
 
 **CI/CD Pipeline** (`on-tag.yaml`):
 ```mermaid
@@ -542,34 +543,33 @@ flowchart LR
     A["Git Tag<br/>v0.8.12"] --> B["GitHub Actions"]
     B --> C["Go CI<br/>(Test + Lint)"]
     C --> D["Build Image<br/>(ko + goreleaser)"]
-    D --> E["Generate SBOM<br/>(Syft)"]  
+    D --> E["Generate SBOM<br/>(Syft)"]
     E --> F["Sign Attestations<br/>(Cosign keyless)"]
     F --> G["Push to GHCR<br/>ghcr.io/nvidia/eidosd"]
-    G --> H["Deploy to Cloud Run<br/>(WIF auth)"]
+    G --> H["Demo Deploy<br/>(example)"]
     H --> I["Health Check<br/>Verification"]
 ```
 
 **Supply Chain Security:**
 - **SLSA Build Level 3** compliance
 - **Signed SBOMs** in SPDX format
-- **Attestations** logged in Rekor transparency log  
+- **Attestations** logged in Rekor transparency log
 - **Verification**: `gh attestation verify oci://ghcr.io/nvidia/eidosd:TAG --owner nvidia`
 
-**Monitoring:**
+**Demo Monitoring:**
 - Health endpoint: `/health`
 - Readiness endpoint: `/ready`
 - Prometheus metrics: `/metrics`
 - Request tracing with `X-Request-Id` headers
-- Cloud Monitoring integration
 
-**Scaling Behavior:**
+**Scaling Behavior (demo):**
 - **Min instances**: 0 (scales to zero when idle)
 - **Max instances**: 100 (automatic scaling)
 - **Cold start**: 2-3 seconds
 - **Request timeout**: 30 seconds
 - **Concurrency**: 80 requests per instance
 
-**Benefits:**
+**Cloud Run Benefits (for reference):**
 - Zero operational overhead
 - Automatic HTTPS with managed certificates
 - Built-in DDoS protection

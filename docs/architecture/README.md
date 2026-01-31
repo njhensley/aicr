@@ -1102,8 +1102,8 @@ Eidos uses GitHub Actions with a three-layer composite actions architecture for 
                     └──────┬──────┘
                            │
                     ┌──────▼──────┐
-                    │ Deploy to   │
-                    │ Cloud Run   │
+                    │ Demo Deploy │
+                    │ (example)   │
                     └─────────────┘
 ```
 
@@ -1124,10 +1124,11 @@ Eidos uses GitHub Actions with a three-layer composite actions architecture for 
 - Record in Rekor transparency log (Sigstore)
 - Achieves **SLSA Build Level 3** compliance
 
-**Deployment** (`cloud-run-deploy` action):
+**Demo Deployment** (`cloud-run-deploy` action):
+- Demonstrates deployment to Google Cloud Run (users should self-host for production)
 - Authenticate with Workload Identity Federation (keyless)
 - Copy image from GHCR to Artifact Registry (us-docker.pkg.dev/eidosx/demo)
-- Deploy eidosd to Google Cloud Run from Artifact Registry
+- Deploy eidosd to Cloud Run as example deployment
 
 **Permissions**: `attestations: write`, `contents: write`, `id-token: write`, `packages: write`
 

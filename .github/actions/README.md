@@ -222,7 +222,7 @@ This action runs `tools/setup-tools --skip-go --skip-docker` in auto mode, which
 3. **E2E Tests** (parallel): Full end-to-end tests
 4. **Build and Release** (after tests): GoReleaser builds binaries and images to GHCR
 5. **Attest Images** (after build): SBOM and provenance for eidos and eidosd images
-6. **Deploy API Server** (after attest): Copy image to Artifact Registry and deploy to Cloud Run
+6. **Deploy Demo API Server** (after attest): Copy image to Artifact Registry and deploy demo to Cloud Run (example deployment)
 
 ### `test-deploy.yaml`
 **Trigger**: Manual (workflow_dispatch)

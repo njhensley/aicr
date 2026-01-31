@@ -955,7 +955,7 @@ Eidos uses a **three-layer composite actions architecture** for reusability:
 - `go-ci` – Complete Go CI pipeline (setup → test → lint)
 - `go-build-release` – Full build/release pipeline
 - `attest-image-from-tag` – Resolve digest + generate attestations
-- `cloud-run-deploy` – GCP deployment with Workload Identity
+- `cloud-run-deploy` – Demo API server deployment (example deployment to GCP)
 
 **Layer 3: Workflows** (Orchestrate Actions)
 - `on-push.yaml` – CI validation for PRs and main branch
@@ -1000,7 +1000,7 @@ jobs:
         with:
           image_name: 'ghcr.io/nvidia/eidos'
           tag: ${{ github.ref_name }}
-  deploy:
+  deploy:  # Demo deployment (example, not production)
     needs: [attest]
     steps:
       - uses: ./.github/actions/cloud-run-deploy

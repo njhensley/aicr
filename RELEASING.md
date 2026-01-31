@@ -35,7 +35,7 @@ For standard releases from the main branch.
    - SBOM generation for all artifacts
    - Attestations signed with Sigstore
    - GitHub Release created with changelog
-   - Cloud Run deployment (eidosd API server)
+   - Demo Cloud Run deployment (eidosd API server example)
 
 4. **Verify artifacts** (see [Verification](#verification) below)
 
@@ -66,8 +66,8 @@ For rebuilding from existing tags or emergency releases:
 ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐
 │ Tag Push │───▶│  Go CI   │───▶│  Build   │───▶│  Attest  │───▶│  Deploy  │
 └──────────┘    └──────────┘    └──────────┘    └──────────┘    └──────────┘
-                  tests +         binaries +      SBOM +          Cloud Run
-                  lint            images          provenance      (eidosd)
+                  tests +         binaries +      SBOM +          Demo Deploy
+                  lint            images          provenance      (example)
 ```
 
 ## Released Components
@@ -161,16 +161,18 @@ curl http://localhost:8080/health
 - **Pre-releases**: `v1.2.3-rc1`, `v1.2.3-beta1` (automatically marked in GitHub)
 - **Breaking changes**: Increment MAJOR version
 
-## Cloud Run Deployment
+## Demo Cloud Run Deployment
 
-The `eidosd` API server is automatically deployed to Google Cloud Run on successful release:
+> **Note**: This is a **demonstration deployment** for testing and development purposes only. It is not a production service. Users should self-host the `eidosd` API server in their own infrastructure for production use. See [API Server Documentation](docs/architecture/api-server.md) for deployment guidance.
+
+The `eidosd` API server demo is automatically deployed to Google Cloud Run on successful release:
 
 - **Project**: `eidosx`
 - **Region**: `us-west1`
 - **Service**: `api`
 - **Authentication**: Workload Identity Federation (keyless)
 
-Deployment only occurs if the build step succeeds.
+This demo deployment only occurs if the build step succeeds and serves as an example of how to deploy the API server.
 
 ## Troubleshooting
 
@@ -186,7 +188,9 @@ Deployment only occurs if the build step succeeds.
 
 Use manual workflow trigger with the existing tag. No need to delete and recreate tags.
 
-### Rollback Cloud Run
+### Rollback Demo Deployment
+
+To rollback the demo Cloud Run deployment (maintainers only):
 
 ```bash
 # List revisions
@@ -242,5 +246,5 @@ After release:
 - [ ] GitHub Release created with changelog
 - [ ] Container images available in GHCR
 - [ ] Attestations verifiable
-- [ ] Cloud Run deployment successful
+- [ ] Demo Cloud Run deployment successful (optional)
 - [ ] Announce release (if applicable)
