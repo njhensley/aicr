@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.3] - 2026-02-04
+
+### Tasks
+
+- Adjust release commit message order by [@mchmarny](https://github.com/mchmarny)
+
 ## [0.3.2] - 2026-02-04
 
 ### Tasks
