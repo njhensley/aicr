@@ -133,7 +133,7 @@ For engineers integrating Eidos into CI/CD pipelines, GitOps workflows, or large
 
 | Document | Description |
 |----------|-------------|
-| [API Reference](integrator/api-reference.md) | Complete REST API specification with examples |
+| [API Reference](user/api-reference.md) | Complete REST API specification with examples |
 | [Automation](integrator/automation.md) | CI/CD integration patterns |
 | [Data Flow](integrator/data-flow.md) | Understanding recipe data architecture |
 | [Kubernetes Deployment](integrator/kubernetes-deployment.md) | Self-hosted API server deployment |

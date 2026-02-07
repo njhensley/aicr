@@ -113,7 +113,7 @@ You contribute code, extend functionality, or work on Eidos internals.
 
 You integrate Eidos into CI/CD pipelines, GitOps workflows, or larger platforms.
 
-- **[API Reference](docs/integrator/api-reference.md)** – REST API endpoints and usage examples
+- **[API Reference](docs/user/api-reference.md)** – REST API endpoints and usage examples
 - **[Data Flow](docs/integrator/data-flow.md)** – Understanding snapshots, recipes, and bundles
 - **[Automation Guide](docs/integrator/automation.md)** – CI/CD integration patterns
 - **[Kubernetes Deployment](docs/integrator/kubernetes-deployment.md)** – Self-hosted API server setup

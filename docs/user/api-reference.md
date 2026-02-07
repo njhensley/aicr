@@ -87,6 +87,25 @@ unzip bundles.zip -d ./bundles
 
 ## Endpoints
 
+### GET /
+
+Service information and available routes.
+
+```shell
+curl "http://localhost:8080/"
+```
+
+**Response:**
+```json
+{
+  "service": "eidosd",
+  "version": "v0.7.6",
+  "routes": ["/v1/recipe", "/v1/bundle"]
+}
+```
+
+---
+
 ### GET /v1/recipe
 
 Generate an optimized configuration recipe based on environment parameters.
@@ -682,6 +701,28 @@ async function main() {
 main();
 ```
 
+### Shell Script (Batch Processing)
+
+```bash
+#!/bin/bash
+# Generate recipes for multiple environments
+
+environments=(
+  "os=ubuntu&accelerator=h100&service=eks"
+  "os=ubuntu&accelerator=gb200&service=gke"
+  "os=rhel&accelerator=a100&service=aks"
+)
+
+for env in "${environments[@]}"; do
+  echo "Fetching recipe for: $env"
+
+  curl -s "http://localhost:8080/v1/recipe?${env}" \
+    | jq -r '.componentRefs[] | "\(.name): \(.version)"'
+
+  echo ""
+done
+```
+
 ## OpenAPI Specification
 
 The full OpenAPI 3.1 specification is available at:
@@ -739,4 +780,6 @@ make server
 - [CLI Reference](cli-reference.md) - Command-line interface
 - [Agent Deployment](agent-deployment.md) - Kubernetes agent for snapshot capture
 - [Installation Guide](installation.md) - Setup instructions
-- [Integration API Reference](../integration/api-reference.md) - Detailed API specification
+- [Data Flow](../integrator/data-flow.md) - Understanding recipe data architecture
+- [Automation Guide](../integrator/automation.md) - CI/CD integration patterns
+- [Kubernetes Deployment](../integrator/kubernetes-deployment.md) - Self-hosted API server deployment

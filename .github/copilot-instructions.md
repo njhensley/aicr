@@ -329,7 +329,7 @@ eidos bundle -r recipe.yaml -b gpu-operator,network-operator \
 - **[Release Process](../RELEASING.md)** – Maintainer guide for releases, verification, hotfixes
 - **[Architecture Overview](../docs/contributor/README.md)** – System design
 - **[Bundler Development](../docs/contributor/component.md)** – Create new bundlers
-- **[API Reference](../docs/integrator/api-reference.md)** – REST API endpoints
+- **[API Reference](../docs/user/api-reference.md)** – REST API endpoints
 - **[GitHub Actions README](actions/README.md)** – CI/CD architecture
 - **[API Specification](../api/eidos/v1/server.yaml)** – OpenAPI spec
 - **[.versions.yaml](../.versions.yaml)** – Tool versions (single source of truth)
