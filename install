@@ -67,7 +67,10 @@ get_os() {
 }
 
 get_binary_name() {
-  echo "${BIN_NAME}_${1}_${2}_${3}"  # version, os, arch
+  local version="$1" os="$2" arch="$3"
+  # macOS uses a universal binary (darwin_all) built by GoReleaser
+  [[ "$os" == "darwin" ]] && arch="all"
+  echo "${BIN_NAME}_${version}_${os}_${arch}"
 }
 
 # ==============================================================================
@@ -137,7 +140,7 @@ extract_version() {
 extract_asset_url() {
   local json="$1"
   local asset_name="$2"
-  local url
+  local url=""
 
   # For private repos with token, use the API URL (id-based)
   # For public repos, use browser_download_url
