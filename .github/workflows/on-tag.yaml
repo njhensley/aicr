@@ -220,31 +220,17 @@ jobs:
       contents: read
       packages: write
     steps:
+      - name: Checkout Code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
       - name: Authenticate to registry
-        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef  # v3.6.0
+        uses: ./.github/actions/ghcr-login
+
+      - name: Create multi-arch manifest
+        uses: ./.github/actions/docker-manifest
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
-
-      - name: Create and push manifests
-        env:
-          TAG: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-
-          # Extract major and minor versions (e.g., v0.5.7 -> v0, v0.5)
-          MAJOR="v$(echo "$TAG" | sed 's/^v//' | cut -d. -f1)"
-          MAJOR_MINOR="v$(echo "$TAG" | sed 's/^v//' | cut -d. -f1-2)"
-
-          # Create and push manifest for each tag
-          for MANIFEST_TAG in "$TAG" "$MAJOR" "$MAJOR_MINOR" "latest"; do
-            docker manifest create --amend "$VALIDATOR_IMAGE:$MANIFEST_TAG" \
-              "$VALIDATOR_IMAGE:$TAG-amd64" \
-              "$VALIDATOR_IMAGE:$TAG-arm64"
-            docker manifest push "$VALIDATOR_IMAGE:$MANIFEST_TAG"
-            echo "Pushed manifest: $VALIDATOR_IMAGE:$MANIFEST_TAG"
-          done
+          image: ${{ env.VALIDATOR_IMAGE }}
+          tag: ${{ github.ref_name }}
 
   # =============================================================================
   # Publish: Flip draft release to public after all artifacts are ready
