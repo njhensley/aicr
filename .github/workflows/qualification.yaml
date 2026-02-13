@@ -29,7 +29,7 @@ permissions:
 jobs:
 
   unit:
-    name: Unit Tests
+    name: Unit
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -55,7 +55,7 @@ jobs:
           lint_timeout: ${{ steps.versions.outputs.lint_timeout }}
 
   integration:
-    name: Integration Tests
+    name: Integration
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -75,7 +75,7 @@ jobs:
           go_version: ${{ steps.versions.outputs.go }}
 
   chainsaw:
-    name: Conformance Tests
+    name: Conformance
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -115,7 +115,7 @@ jobs:
             --test-dir tests/chainsaw/ai-conformance/offline/
 
   e2e:
-    name: E2E Tests
+    name: E2E
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
