@@ -38,8 +38,6 @@ jobs:
     name: GPU Smoke Test (nvkind + T4)
     runs-on: linux-amd64-gpu-t4-latest-1
     timeout-minutes: 30
-    permissions:
-      contents: read
 
     env:
       KIND_CLUSTER_NAME: gpu-smoke-test
@@ -56,35 +54,8 @@ jobs:
         with:
           expected-gpu-model: T4
 
-      - name: Collect debug artifacts
-        if: failure()
-        run: |
-          mkdir -p /tmp/debug-artifacts
-          kubectl --context="kind-${KIND_CLUSTER_NAME}" get all --all-namespaces > /tmp/debug-artifacts/all-resources.txt || true
-          kubectl --context="kind-${KIND_CLUSTER_NAME}" get events --all-namespaces --sort-by='.lastTimestamp' > /tmp/debug-artifacts/events.txt || true
-          kubectl --context="kind-${KIND_CLUSTER_NAME}" -n gpu-operator get pods -o wide > /tmp/debug-artifacts/gpu-operator-pods.txt || true
-          kubectl --context="kind-${KIND_CLUSTER_NAME}" -n gpu-operator logs -l app=nvidia-device-plugin-daemonset --tail=100 > /tmp/debug-artifacts/device-plugin-logs.txt || true
-          kubectl --context="kind-${KIND_CLUSTER_NAME}" -n gpu-operator logs -l app.kubernetes.io/component=gpu-operator --tail=100 > /tmp/debug-artifacts/gpu-operator-logs.txt || true
-          kubectl --context="kind-${KIND_CLUSTER_NAME}" describe pod/gpu-smoke-test > /tmp/debug-artifacts/gpu-pod-describe.txt || true
-
-      - name: Export kind logs
-        if: failure()
-        run: |
-          mkdir -p /tmp/kind-logs
-          kind export logs /tmp/kind-logs --name "${KIND_CLUSTER_NAME}" || true
-
-      - name: Upload debug artifacts
-        if: failure()
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6.0.0
-        with:
-          name: gpu-smoke-test-debug-${{ github.run_id }}
-          path: |
-            /tmp/debug-artifacts/
-            /tmp/kind-logs/
-          retention-days: 7
-
-      - name: Cleanup
+      - name: GPU Test Cleanup
         if: always()
-        run: |
-          kind delete cluster --name "${KIND_CLUSTER_NAME}" || true
-          docker system prune -f || true
+        uses: ./.github/actions/gpu-test-cleanup
+        with:
+          cluster_name: ${{ env.KIND_CLUSTER_NAME }}

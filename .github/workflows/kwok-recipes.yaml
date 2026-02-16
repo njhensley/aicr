@@ -50,8 +50,6 @@ jobs:
     name: KWOK Recipe Tests
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    permissions:
-      contents: read
     steps:
       - name: Checkout Code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -71,6 +69,7 @@ jobs:
           helm_version: ${{ steps.versions.outputs.helm }}
           kwok_version: ${{ steps.versions.outputs.kwok }}
           kubectl_version: ${{ steps.versions.outputs.kubectl }}
+          yq_version: ${{ steps.versions.outputs.yq }}
           kind_node_image: ${{ steps.versions.outputs.kind_node_image }}
 
   summary:
@@ -78,8 +77,6 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     if: always()
-    permissions:
-      contents: read
     steps:
       - name: Check test results
         run: |

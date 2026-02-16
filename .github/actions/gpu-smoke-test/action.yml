@@ -28,6 +28,14 @@ runs:
   using: 'composite'
   steps:
 
+    - name: Validate environment
+      shell: bash
+      run: |
+        if [[ -z "${KIND_CLUSTER_NAME:-}" ]]; then
+          echo "::error::KIND_CLUSTER_NAME environment variable must be set by the calling workflow"
+          exit 1
+        fi
+
     - name: Load versions
       id: versions
       uses: ./.github/actions/load-versions
@@ -62,11 +70,8 @@ runs:
     - name: Install Helm
       shell: bash
       run: |
-        HELM_VERSION="${{ steps.versions.outputs.helm }}"
-        curl -fsSL https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz \
-          | tar -xzC /tmp
-        sudo mv /tmp/linux-amd64/helm /usr/local/bin/helm
-        sudo chmod +x /usr/local/bin/helm
+        curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | \
+          DESIRED_VERSION=${{ steps.versions.outputs.helm }} bash
         helm version
 
     - name: Install nvkind

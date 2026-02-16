@@ -19,6 +19,10 @@ inputs:
   go_version:
     description: 'Go version to install (e.g., 1.25)'
     required: true
+  helm_version:
+    description: 'Helm version to install (e.g., v4.1.0)'
+    required: false
+    default: 'v4.1.0'
   chainsaw_version:
     description: 'Chainsaw version to install (e.g., v0.2.14)'
     required: false
@@ -45,7 +49,8 @@ runs:
     - name: Install Helm
       shell: bash
       run: |
-        curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+        curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | \
+          DESIRED_VERSION=${{ inputs.helm_version }} bash
 
     - name: Install Chainsaw
       shell: bash

@@ -77,6 +77,7 @@ jobs:
         uses: ./.github/actions/integration
         with:
           go_version: ${{ steps.versions.outputs.go }}
+          helm_version: ${{ steps.versions.outputs.helm }}
           chainsaw_version: ${{ steps.versions.outputs.chainsaw }}
 
   chainsaw:

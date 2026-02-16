@@ -141,6 +141,8 @@ jobs:
           platforms: ${{ matrix.platform }}
           push: true
           tags: ${{ env.VALIDATOR_IMAGE }}:${{ github.ref_name }}-${{ matrix.arch }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
           labels: |
             org.opencontainers.image.created=${{ github.event.head_commit.timestamp }}
             org.opencontainers.image.title=eidos-validator

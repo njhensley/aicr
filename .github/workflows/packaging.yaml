@@ -21,7 +21,7 @@ on:
     paths:
       - '.goreleaser.yaml'
       - '.goreleaser.yml'
-      - '.github/workflows/packaging.yml'
+      - '.github/workflows/packaging.yaml'
   workflow_dispatch: {}
 
 permissions:
@@ -36,8 +36,6 @@ jobs:
     name: Package (Dry Run)
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    permissions:
-      contents: read
     steps:
       - name: Checkout Code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2

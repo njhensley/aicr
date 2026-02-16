@@ -64,6 +64,9 @@ outputs:
   chainsaw:
     description: 'Chainsaw version'
     value: ${{ steps.versions.outputs.chainsaw }}
+  yq:
+    description: 'yq version'
+    value: ${{ steps.versions.outputs.yq }}
   coverage_threshold:
     description: 'Minimum test coverage percentage'
     value: ${{ steps.versions.outputs.coverage_threshold }}
@@ -73,9 +76,6 @@ outputs:
   test_timeout:
     description: 'Test timeout duration'
     value: ${{ steps.versions.outputs.test_timeout }}
-  image_registry:
-    description: 'Container image registry'
-    value: ${{ steps.versions.outputs.image_registry }}
   kind_node_image:
     description: 'Kind node image for testing'
     value: ${{ steps.versions.outputs.kind_node_image }}
@@ -87,6 +87,8 @@ runs:
       id: versions
       shell: bash
       run: |
+        set -euo pipefail
+
         # Languages
         echo "go=$(yq eval '.languages.go' .settings.yaml)" >> $GITHUB_OUTPUT
 
@@ -112,14 +114,12 @@ runs:
         echo "helm=$(yq eval '.testing_tools.helm' .settings.yaml)" >> $GITHUB_OUTPUT
         echo "kwok=$(yq eval '.testing_tools.kwok' .settings.yaml)" >> $GITHUB_OUTPUT
         echo "chainsaw=$(yq eval '.testing_tools.chainsaw' .settings.yaml)" >> $GITHUB_OUTPUT
+        echo "yq=$(yq eval '.testing_tools.yq' .settings.yaml)" >> $GITHUB_OUTPUT
 
         # Quality thresholds
         echo "coverage_threshold=$(yq eval '.quality.coverage_threshold' .settings.yaml)" >> $GITHUB_OUTPUT
         echo "lint_timeout=$(yq eval '.quality.lint_timeout' .settings.yaml)" >> $GITHUB_OUTPUT
         echo "test_timeout=$(yq eval '.quality.test_timeout' .settings.yaml)" >> $GITHUB_OUTPUT
-
-        # Build configuration
-        echo "image_registry=$(yq eval '.build.image_registry' .settings.yaml)" >> $GITHUB_OUTPUT
 
         # Testing configuration
         echo "kind_node_image=$(yq eval '.testing.kind_node_image' .settings.yaml)" >> $GITHUB_OUTPUT
@@ -127,6 +127,7 @@ runs:
     - name: Display loaded versions
       shell: bash
       run: |
+        set -euo pipefail
         echo "Loaded versions from .settings.yaml:"
         echo "  go: ${{ steps.versions.outputs.go }}"
         echo "  goreleaser: ${{ steps.versions.outputs.goreleaser }}"
@@ -144,8 +145,8 @@ runs:
         echo "  helm: ${{ steps.versions.outputs.helm }}"
         echo "  kwok: ${{ steps.versions.outputs.kwok }}"
         echo "  chainsaw: ${{ steps.versions.outputs.chainsaw }}"
+        echo "  yq: ${{ steps.versions.outputs.yq }}"
         echo "  coverage_threshold: ${{ steps.versions.outputs.coverage_threshold }}"
         echo "  lint_timeout: ${{ steps.versions.outputs.lint_timeout }}"
         echo "  test_timeout: ${{ steps.versions.outputs.test_timeout }}"
-        echo "  image_registry: ${{ steps.versions.outputs.image_registry }}"
         echo "  kind_node_image: ${{ steps.versions.outputs.kind_node_image }}"
