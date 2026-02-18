@@ -15,77 +15,25 @@
 package agent
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"fmt"
 	"io"
-	"strings"
 	"time"
 
 	"github.com/NVIDIA/eidos/pkg/errors"
-	batchv1 "k8s.io/api/batch/v1"
-	corev1 "k8s.io/api/core/v1"
+	"github.com/NVIDIA/eidos/pkg/k8s/pod"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/apimachinery/pkg/watch"
 )
 
 // waitForJobCompletion waits for the Job to complete successfully or fail.
 func (d *Deployer) waitForJobCompletion(ctx context.Context, timeout time.Duration) error {
-	// Use watch API for efficient polling
-	watcher, err := d.clientset.BatchV1().Jobs(d.config.Namespace).Watch(
-		ctx,
-		metav1.ListOptions{
-			FieldSelector: fmt.Sprintf("metadata.name=%s", d.config.JobName),
-			Watch:         true,
-		},
-	)
-	if err != nil {
-		return errors.Wrap(errors.ErrCodeInternal, "failed to watch Job", err)
-	}
-	defer watcher.Stop()
-
-	// Create timeout context
-	timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	for {
-		select {
-		case <-timeoutCtx.Done():
-			return errors.New(errors.ErrCodeTimeout, fmt.Sprintf("timeout waiting for Job completion after %v", timeout))
-
-		case event, ok := <-watcher.ResultChan():
-			if !ok {
-				return errors.New(errors.ErrCodeInternal, "watch channel closed unexpectedly")
-			}
-
-			if event.Type == watch.Error {
-				return errors.New(errors.ErrCodeInternal, fmt.Sprintf("watch error: %v", event.Object))
-			}
-
-			job, ok := event.Object.(*batchv1.Job)
-			if !ok {
-				continue
-			}
-
-			// Check for completion
-			for _, condition := range job.Status.Conditions {
-				if condition.Type == batchv1.JobComplete && condition.Status == corev1.ConditionTrue {
-					return nil // Job completed successfully
-				}
-				if condition.Type == batchv1.JobFailed && condition.Status == corev1.ConditionTrue {
-					return errors.New(errors.ErrCodeInternal, fmt.Sprintf("job failed: %s", condition.Message))
-				}
-			}
-		}
-	}
+	return pod.WaitForJobCompletion(ctx, d.clientset, d.config.Namespace, d.config.JobName, timeout)
 }
 
 // getSnapshotFromConfigMap retrieves the snapshot data from ConfigMap.
 func (d *Deployer) getSnapshotFromConfigMap(ctx context.Context) ([]byte, error) {
 	// Parse ConfigMap name from output URI
-	namespace, name, err := parseConfigMapName(d.config.Output)
+	namespace, name, err := pod.ParseConfigMapURI(d.config.Output)
 	if err != nil {
 		return nil, errors.Wrap(errors.ErrCodeInvalidRequest, "failed to parse ConfigMap URI", err)
 	}
@@ -110,50 +58,79 @@ func (d *Deployer) getSnapshotFromConfigMap(ctx context.Context) ([]byte, error)
 // Returns when the context is canceled or an error occurs.
 func (d *Deployer) StreamLogs(ctx context.Context, w io.Writer, prefix string) error {
 	// Find Pod for this Job
-	pods, err := d.clientset.CoreV1().Pods(d.config.Namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: "app.kubernetes.io/name=eidos",
-	})
+	podName, err := d.findPodName(ctx)
 	if err != nil {
-		return errors.Wrap(errors.ErrCodeInternal, "failed to list Pods", err)
+		return err
 	}
 
-	if len(pods.Items) == 0 {
-		return errors.New(errors.ErrCodeNotFound, fmt.Sprintf("no Pods found for Job %s", d.config.JobName))
+	// Stream logs using shared function
+	// Note: shared function doesn't support prefix, so we need to wrap the writer if prefix is needed
+	if prefix != "" {
+		w = &prefixWriter{writer: w, prefix: prefix}
 	}
 
-	// Get logs from first Pod with Follow=true
-	pod := pods.Items[0]
-	req := d.clientset.CoreV1().Pods(d.config.Namespace).GetLogs(pod.Name, &corev1.PodLogOptions{
-		Follow: true,
-	})
-
-	logs, err := req.Stream(ctx)
-	if err != nil {
-		return errors.Wrap(errors.ErrCodeInternal, "failed to stream logs", err)
-	}
-	defer logs.Close()
-
-	// Stream logs line by line with prefix
-	scanner := bufio.NewScanner(logs)
-	for scanner.Scan() {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-			if prefix != "" {
-				fmt.Fprintf(w, "%s %s\n", prefix, scanner.Text())
-			} else {
-				fmt.Fprintln(w, scanner.Text())
-			}
-		}
-	}
-
-	return scanner.Err()
+	return pod.StreamLogs(ctx, d.clientset, d.config.Namespace, podName, w)
 }
 
 // GetPodLogs retrieves logs from the Job's Pod.
 func (d *Deployer) GetPodLogs(ctx context.Context) (string, error) {
 	// Find Pod for this Job
+	podName, err := d.findPodName(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	return pod.GetPodLogs(ctx, d.clientset, d.config.Namespace, podName)
+}
+
+// WaitForPodReady waits for the Job's Pod to be in Running state.
+// This is useful for streaming logs before Job completes.
+func (d *Deployer) WaitForPodReady(ctx context.Context, timeout time.Duration) error {
+	// First, wait for pod to be created (poll until we find it)
+	var podName string
+	pollCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	// Poll for pod creation with label selector
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-pollCtx.Done():
+			return errors.New(errors.ErrCodeTimeout, fmt.Sprintf("timeout waiting for Pod creation after %v", timeout))
+		case <-ticker.C:
+			pods, err := d.clientset.CoreV1().Pods(d.config.Namespace).List(pollCtx, metav1.ListOptions{
+				LabelSelector: "app.kubernetes.io/name=eidos",
+			})
+			if err != nil {
+				return errors.Wrap(errors.ErrCodeInternal, "failed to list Pods", err)
+			}
+
+			if len(pods.Items) > 0 {
+				podName = pods.Items[0].Name
+				goto foundPod
+			}
+		}
+	}
+
+foundPod:
+	// Calculate remaining timeout
+	deadline, ok := pollCtx.Deadline()
+	if !ok {
+		return errors.New(errors.ErrCodeInternal, "context deadline not set")
+	}
+	remainingTimeout := time.Until(deadline)
+	if remainingTimeout <= 0 {
+		return errors.New(errors.ErrCodeTimeout, fmt.Sprintf("timeout waiting for Pod ready after %v", timeout))
+	}
+
+	// Wait for pod to be ready using shared function
+	return pod.WaitForPodReady(ctx, d.clientset, d.config.Namespace, podName, remainingTimeout)
+}
+
+// findPodName finds the pod name by label selector for this Job.
+func (d *Deployer) findPodName(ctx context.Context) (string, error) {
 	pods, err := d.clientset.CoreV1().Pods(d.config.Namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: "app.kubernetes.io/name=eidos",
 	})
@@ -165,71 +142,17 @@ func (d *Deployer) GetPodLogs(ctx context.Context) (string, error) {
 		return "", errors.New(errors.ErrCodeNotFound, fmt.Sprintf("no Pods found for Job %s", d.config.JobName))
 	}
 
-	// Get logs from first Pod (there should only be one)
-	pod := pods.Items[0]
-	req := d.clientset.CoreV1().Pods(d.config.Namespace).GetLogs(pod.Name, &corev1.PodLogOptions{})
-
-	logs, err := req.Stream(ctx)
-	if err != nil {
-		return "", errors.Wrap(errors.ErrCodeInternal, "failed to stream logs", err)
-	}
-	defer logs.Close()
-
-	buf := new(bytes.Buffer)
-	if _, err := io.Copy(buf, logs); err != nil {
-		return "", errors.Wrap(errors.ErrCodeInternal, "failed to read logs", err)
-	}
-
-	return buf.String(), nil
+	return pods.Items[0].Name, nil
 }
 
-// WaitForPodReady waits for the Job's Pod to be in Running state.
-// This is useful for streaming logs before Job completes.
-func (d *Deployer) WaitForPodReady(ctx context.Context, timeout time.Duration) error {
-	return wait.PollUntilContextTimeout(ctx, 500*time.Millisecond, timeout, true,
-		func(ctx context.Context) (bool, error) {
-			pods, err := d.clientset.CoreV1().Pods(d.config.Namespace).List(ctx, metav1.ListOptions{
-				LabelSelector: "app.kubernetes.io/name=eidos",
-			})
-			if err != nil {
-				return false, err
-			}
-
-			if len(pods.Items) == 0 {
-				return false, nil // Pod not created yet
-			}
-
-			pod := pods.Items[0]
-			if pod.Status.Phase == corev1.PodRunning {
-				return true, nil
-			}
-
-			// Check for failed Pod
-			if pod.Status.Phase == corev1.PodFailed {
-				return false, errors.New(errors.ErrCodeInternal, fmt.Sprintf("pod failed: %s", pod.Status.Message))
-			}
-
-			return false, nil // Keep waiting
-		},
-	)
+// prefixWriter wraps an io.Writer to add a prefix to each line.
+type prefixWriter struct {
+	writer io.Writer
+	prefix string
 }
 
-// parseConfigMapName parses a ConfigMap URI (cm://namespace/name) and returns namespace, name.
-// Returns error if the URI format is invalid.
-func parseConfigMapName(uri string) (namespace, name string, err error) {
-	// Expected format: cm://namespace/name
-	if !strings.HasPrefix(uri, "cm://") {
-		return "", "", errors.New(errors.ErrCodeInvalidRequest, fmt.Sprintf("invalid ConfigMap URI format: expected cm://namespace/name, got %q", uri))
-	}
-
-	// Remove cm:// prefix
-	path := strings.TrimPrefix(uri, "cm://")
-
-	// Split into namespace/name
-	parts := strings.SplitN(path, "/", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return "", "", errors.New(errors.ErrCodeInvalidRequest, fmt.Sprintf("invalid ConfigMap URI format: expected cm://namespace/name, got %q", uri))
-	}
-
-	return parts[0], parts[1], nil
+func (pw *prefixWriter) Write(p []byte) (n int, err error) {
+	// Add prefix to the line
+	line := fmt.Sprintf("%s %s", pw.prefix, string(p))
+	return pw.writer.Write([]byte(line))
 }

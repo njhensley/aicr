@@ -27,6 +27,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/NVIDIA/eidos/pkg/errors"
+	"github.com/NVIDIA/eidos/pkg/k8s/pod"
 	"gopkg.in/yaml.v3"
 )
 
@@ -102,7 +103,7 @@ func NewFileWriterOrStdout(format Format, path string) (Serializer, error) {
 
 	// Check for ConfigMap URI (cm://namespace/name)
 	if strings.HasPrefix(trimmed, ConfigMapURIScheme) {
-		namespace, name, err := parseConfigMapURI(trimmed)
+		namespace, name, err := pod.ParseConfigMapURI(trimmed)
 		if err != nil {
 			return nil, errors.Wrap(errors.ErrCodeInvalidRequest, fmt.Sprintf("invalid ConfigMap URI %q", trimmed), err)
 		}

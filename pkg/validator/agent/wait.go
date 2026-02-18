@@ -18,79 +18,40 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	goerrors "errors"
 	"fmt"
 	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/NVIDIA/eidos/pkg/errors"
-	batchv1 "k8s.io/api/batch/v1"
+	"github.com/NVIDIA/eidos/pkg/k8s/pod"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/watch"
 )
 
 // waitForJobCompletion waits for the Job to complete or timeout.
 func (d *Deployer) waitForJobCompletion(ctx context.Context, timeout time.Duration) error {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	watcher, err := d.clientset.BatchV1().Jobs(d.config.Namespace).Watch(ctx, metav1.ListOptions{
-		FieldSelector: fmt.Sprintf("metadata.name=%s", d.config.JobName),
-	})
+	err := pod.WaitForJobCompletion(ctx, d.clientset, d.config.Namespace, d.config.JobName, timeout)
 	if err != nil {
-		return errors.Wrap(errors.ErrCodeInternal, "failed to watch Job", err)
-	}
-	defer watcher.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return errors.Wrap(errors.ErrCodeTimeout, "timeout waiting for Job completion", ctx.Err())
-		case event := <-watcher.ResultChan():
-			if event.Type == watch.Deleted {
-				return errors.New(errors.ErrCodeInternal, "job was deleted")
-			}
-
-			job, ok := event.Object.(*batchv1.Job)
-			if !ok {
-				continue
-			}
-
-			// Check for completion conditions
-			for _, condition := range job.Status.Conditions {
-				switch condition.Type {
-				case batchv1.JobComplete:
-					if condition.Status == corev1.ConditionTrue {
-						slog.Debug("Job completed successfully",
-							"job", d.config.JobName)
-						return nil
-					}
-				case batchv1.JobFailed:
-					if condition.Status == corev1.ConditionTrue {
-						// Get detailed failure reason from Pod status
-						failureReason := d.getJobFailureReason(ctx, condition.Reason, condition.Message)
-						return errors.New(errors.ErrCodeInternal, fmt.Sprintf("job failed: %s", failureReason))
-					}
-				case batchv1.JobSuspended, batchv1.JobFailureTarget, batchv1.JobSuccessCriteriaMet:
-					// These conditions don't affect completion, continue waiting
-					continue
-				}
+		// If job failed with internal error, try to get detailed failure reason from Pod status
+		var structuredErr *errors.StructuredError
+		if goerrors.As(err, &structuredErr) && structuredErr.Code == errors.ErrCodeInternal {
+			if jobPod, podErr := d.getPodForJob(ctx); podErr == nil {
+				failureReason := d.getJobFailureReasonFromPod(jobPod)
+				return errors.Wrap(errors.ErrCodeInternal, fmt.Sprintf("job failed: %s", failureReason), err)
 			}
 		}
+		return err
 	}
+
+	slog.Debug("Job completed successfully", "job", d.config.JobName)
+	return nil
 }
 
-// getJobFailureReason inspects the Pod status to determine detailed failure reason.
+// getJobFailureReasonFromPod inspects the Pod status to determine detailed failure reason.
 // This helps distinguish between test failures, image pull errors, crashes, etc.
-func (d *Deployer) getJobFailureReason(ctx context.Context, conditionReason, conditionMessage string) string {
-	// Get the pod for this Job
-	pod, err := d.getPodForJob(ctx)
-	if err != nil {
-		// Can't get pod details, return generic Job condition message
-		return fmt.Sprintf("%s: %s", conditionReason, conditionMessage)
-	}
-
+func (d *Deployer) getJobFailureReasonFromPod(pod *corev1.Pod) string {
 	// Check pod phase
 	switch pod.Status.Phase {
 	case corev1.PodPending:
@@ -106,7 +67,7 @@ func (d *Deployer) getJobFailureReason(ctx context.Context, conditionReason, con
 				return fmt.Sprintf("Container waiting: %s - %s", waiting.Reason, waiting.Message)
 			}
 		}
-		return fmt.Sprintf("Pod pending: %s", conditionMessage)
+		return "Pod pending"
 
 	case corev1.PodFailed:
 		// Pod completed but failed - check container exit codes
@@ -137,51 +98,46 @@ func (d *Deployer) getJobFailureReason(ctx context.Context, conditionReason, con
 				}
 			}
 		}
-		return fmt.Sprintf("Pod failed: %s", conditionMessage)
+		return "Pod failed"
 
 	case corev1.PodRunning:
 		// Pod is still running but Job failed - shouldn't normally happen
-		return fmt.Sprintf("Pod still running but Job marked as failed: %s", conditionMessage)
+		return "Pod still running but Job marked as failed"
 
 	case corev1.PodSucceeded:
 		// Pod succeeded but we're checking failure reason - shouldn't happen
-		return fmt.Sprintf("Pod succeeded (unexpected in failure check): %s", conditionMessage)
+		return "Pod succeeded (unexpected in failure check)"
 
 	case corev1.PodUnknown:
 		// Pod state is unknown
-		return fmt.Sprintf("Pod state unknown: %s", conditionMessage)
+		return "Pod state unknown"
 
 	default:
-		return fmt.Sprintf("%s: %s (pod phase: %s)", conditionReason, conditionMessage, pod.Status.Phase)
+		return fmt.Sprintf("Unexpected pod phase: %s", pod.Status.Phase)
 	}
 }
 
 // getResultFromJobLogs retrieves the validation result from Job pod logs.
 func (d *Deployer) getResultFromJobLogs(ctx context.Context) (*ValidationResult, error) {
 	// Get the pod for this Job
-	pod, err := d.getPodForJob(ctx)
+	jobPod, err := d.getPodForJob(ctx)
 	if err != nil {
 		return nil, errors.Wrap(errors.ErrCodeNotFound, "failed to find pod", err)
 	}
 
-	// Get pod logs
-	req := d.clientset.CoreV1().Pods(d.config.Namespace).GetLogs(pod.Name, &corev1.PodLogOptions{})
-	stream, err := req.Stream(ctx)
+	// Get pod logs using shared function
+	logs, err := pod.GetPodLogs(ctx, d.clientset, d.config.Namespace, jobPod.Name)
 	if err != nil {
-		return nil, errors.Wrap(errors.ErrCodeInternal, "failed to get pod logs", err)
+		return nil, err
 	}
-	defer stream.Close()
 
-	// Read all logs
-	var logBuffer strings.Builder
-	scanner := bufio.NewScanner(stream)
+	// Parse logs to extract JSON test output between markers
 	captureJSON := false
 	var jsonLines []string
 
+	scanner := bufio.NewScanner(strings.NewReader(logs))
 	for scanner.Scan() {
 		line := scanner.Text()
-		logBuffer.WriteString(line)
-		logBuffer.WriteString("\n")
 
 		// Capture lines between markers
 		if strings.Contains(line, "--- BEGIN TEST OUTPUT ---") {
@@ -198,10 +154,6 @@ func (d *Deployer) getResultFromJobLogs(ctx context.Context) (*ValidationResult,
 		}
 	}
 
-	if scanErr := scanner.Err(); scanErr != nil {
-		return nil, errors.Wrap(errors.ErrCodeInternal, "failed to read pod logs", scanErr)
-	}
-
 	// Parse go test JSON output
 	jsonOutput := strings.Join(jsonLines, "\n")
 	result, err := parseGoTestJSON(jsonOutput)
@@ -212,59 +164,39 @@ func (d *Deployer) getResultFromJobLogs(ctx context.Context) (*ValidationResult,
 	return result, nil
 }
 
+// slogWriter is an io.Writer that forwards each line to slog.Info.
+type slogWriter struct{}
+
+func (w slogWriter) Write(p []byte) (n int, err error) {
+	// Remove trailing newline if present
+	line := string(p)
+	if len(line) > 0 && line[len(line)-1] == '\n' {
+		line = line[:len(line)-1]
+	}
+	slog.Info(line)
+	return len(p), nil
+}
+
 // streamPodLogs streams logs from the Job's pod.
 func (d *Deployer) streamPodLogs(ctx context.Context) error {
 	// Get the pod for this Job
-	pod, err := d.getPodForJob(ctx)
+	jobPod, err := d.getPodForJob(ctx)
 	if err != nil {
 		return errors.Wrap(errors.ErrCodeNotFound, "failed to find pod", err)
 	}
 
-	req := d.clientset.CoreV1().Pods(d.config.Namespace).GetLogs(pod.Name, &corev1.PodLogOptions{
-		Follow: true,
-	})
-
-	stream, err := req.Stream(ctx)
-	if err != nil {
-		return errors.Wrap(errors.ErrCodeInternal, "failed to open log stream", err)
-	}
-	defer stream.Close()
-
-	scanner := bufio.NewScanner(stream)
-	for scanner.Scan() {
-		slog.Info(scanner.Text())
-	}
-
-	return scanner.Err()
+	return pod.StreamLogs(ctx, d.clientset, d.config.Namespace, jobPod.Name, slogWriter{})
 }
 
 // getPodLogsAsString retrieves all pod logs as a string.
 // This is useful for capturing logs when a Job fails.
 func (d *Deployer) getPodLogsAsString(ctx context.Context) (string, error) {
-	pod, err := d.getPodForJob(ctx)
+	jobPod, err := d.getPodForJob(ctx)
 	if err != nil {
 		return "", errors.Wrap(errors.ErrCodeNotFound, "failed to find pod", err)
 	}
 
-	req := d.clientset.CoreV1().Pods(d.config.Namespace).GetLogs(pod.Name, &corev1.PodLogOptions{})
-	stream, err := req.Stream(ctx)
-	if err != nil {
-		return "", errors.Wrap(errors.ErrCodeInternal, "failed to get pod logs", err)
-	}
-	defer stream.Close()
-
-	var logBuffer strings.Builder
-	scanner := bufio.NewScanner(stream)
-	for scanner.Scan() {
-		logBuffer.WriteString(scanner.Text())
-		logBuffer.WriteString("\n")
-	}
-
-	if scanErr := scanner.Err(); scanErr != nil {
-		return "", errors.Wrap(errors.ErrCodeInternal, "failed to read pod logs", scanErr)
-	}
-
-	return logBuffer.String(), nil
+	return pod.GetPodLogs(ctx, d.clientset, d.config.Namespace, jobPod.Name)
 }
 
 // getPodForJob finds the pod created by the Job.

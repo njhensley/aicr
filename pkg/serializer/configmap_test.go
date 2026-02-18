@@ -16,6 +16,8 @@ package serializer
 
 import (
 	"testing"
+
+	"github.com/NVIDIA/eidos/pkg/k8s/pod"
 )
 
 func TestParseConfigMapURI(t *testing.T) {
@@ -86,17 +88,17 @@ func TestParseConfigMapURI(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			namespace, name, err := parseConfigMapURI(tt.uri)
+			namespace, name, err := pod.ParseConfigMapURI(tt.uri)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("parseConfigMapURI() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf("pod.ParseConfigMapURI() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
 			if !tt.wantErr {
 				if namespace != tt.wantNamespace {
-					t.Errorf("parseConfigMapURI() namespace = %v, want %v", namespace, tt.wantNamespace)
+					t.Errorf("pod.ParseConfigMapURI() namespace = %v, want %v", namespace, tt.wantNamespace)
 				}
 				if name != tt.wantName {
-					t.Errorf("parseConfigMapURI() name = %v, want %v", name, tt.wantName)
+					t.Errorf("pod.ParseConfigMapURI() name = %v, want %v", name, tt.wantName)
 				}
 			}
 		})

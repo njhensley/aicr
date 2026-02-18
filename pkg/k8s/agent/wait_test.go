@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/NVIDIA/eidos/pkg/k8s/pod"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -81,9 +82,9 @@ func TestParseConfigMapName_Extended(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ns, name, err := parseConfigMapName(tt.uri)
+			ns, name, err := pod.ParseConfigMapURI(tt.uri)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("parseConfigMapName() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf("ParseConfigMapURI() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
 			if !tt.wantErr {
@@ -268,6 +269,12 @@ func TestDeployer_WaitForPodReady_Extended(t *testing.T) {
 			},
 			Status: corev1.PodStatus{
 				Phase: corev1.PodRunning,
+				Conditions: []corev1.PodCondition{
+					{
+						Type:   corev1.PodReady,
+						Status: corev1.ConditionTrue,
+					},
+				},
 			},
 		}
 

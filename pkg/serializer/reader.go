@@ -28,6 +28,7 @@ import (
 	"github.com/NVIDIA/eidos/pkg/defaults"
 	"github.com/NVIDIA/eidos/pkg/errors"
 	"github.com/NVIDIA/eidos/pkg/k8s/client"
+	"github.com/NVIDIA/eidos/pkg/k8s/pod"
 	"gopkg.in/yaml.v3"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -341,7 +342,7 @@ func FromFile[T any](path string) (*T, error) {
 func FromFileWithKubeconfig[T any](path, kubeconfig string) (*T, error) {
 	// Check for ConfigMap URI
 	if strings.HasPrefix(path, ConfigMapURIScheme) {
-		namespace, name, err := parseConfigMapURI(path)
+		namespace, name, err := pod.ParseConfigMapURI(path)
 		if err != nil {
 			return nil, errors.Wrap(errors.ErrCodeInvalidRequest, "invalid ConfigMap URI", err)
 		}

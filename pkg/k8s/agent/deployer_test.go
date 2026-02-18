@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/NVIDIA/eidos/pkg/k8s/pod"
 	authv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -632,10 +633,10 @@ func TestParseConfigMapName(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			namespace, name, err := parseConfigMapName(tt.uri)
+			namespace, name, err := pod.ParseConfigMapURI(tt.uri)
 
 			if (err != nil) != tt.wantErr {
-				t.Errorf("parseConfigMapName() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf("ParseConfigMapURI() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
 
@@ -740,7 +741,7 @@ func TestDeployer_GetSnapshot_MissingKey(t *testing.T) {
 }
 
 func TestDeployer_WaitForPodReady(t *testing.T) {
-	// Create a Pod in Running state
+	// Create a Pod in Running state with Ready condition
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "eidos-xyz",
@@ -751,6 +752,12 @@ func TestDeployer_WaitForPodReady(t *testing.T) {
 		},
 		Status: corev1.PodStatus{
 			Phase: corev1.PodRunning,
+			Conditions: []corev1.PodCondition{
+				{
+					Type:   corev1.PodReady,
+					Status: corev1.ConditionTrue,
+				},
+			},
 		},
 	}
 
@@ -763,7 +770,7 @@ func TestDeployer_WaitForPodReady(t *testing.T) {
 	deployer := NewDeployer(clientset, config)
 	ctx := context.Background()
 
-	// Should succeed because Pod is Running
+	// Should succeed because Pod is Ready
 	err := deployer.WaitForPodReady(ctx, 1*time.Second)
 	if err != nil {
 		t.Errorf("WaitForPodReady() failed: %v", err)

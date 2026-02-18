@@ -18,7 +18,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/NVIDIA/eidos/pkg/defaults"
@@ -183,32 +182,3 @@ func (w *ConfigMapWriter) Close() error {
 	return nil
 }
 
-// parseConfigMapURI parses a ConfigMap URI in the format cm://namespace/name
-// and returns the namespace and name components.
-// Returns an error if the URI is malformed.
-func parseConfigMapURI(uri string) (namespace, name string, err error) {
-	if !strings.HasPrefix(uri, ConfigMapURIScheme) {
-		return "", "", errors.New(errors.ErrCodeInvalidRequest, fmt.Sprintf("invalid ConfigMap URI: must start with %s", ConfigMapURIScheme))
-	}
-
-	// Remove cm:// prefix
-	path := strings.TrimPrefix(uri, ConfigMapURIScheme)
-
-	// Split into namespace/name
-	parts := strings.SplitN(path, "/", 2)
-	if len(parts) != 2 {
-		return "", "", errors.New(errors.ErrCodeInvalidRequest, fmt.Sprintf("invalid ConfigMap URI format: expected %snamespace/name, got %s", ConfigMapURIScheme, uri))
-	}
-
-	namespace = strings.TrimSpace(parts[0])
-	name = strings.TrimSpace(parts[1])
-
-	if namespace == "" {
-		return "", "", errors.New(errors.ErrCodeInvalidRequest, "invalid ConfigMap URI: namespace cannot be empty")
-	}
-	if name == "" {
-		return "", "", errors.New(errors.ErrCodeInvalidRequest, "invalid ConfigMap URI: name cannot be empty")
-	}
-
-	return namespace, name, nil
-}
