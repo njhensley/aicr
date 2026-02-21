@@ -7,7 +7,6 @@ All notable changes to this project will be documented in this file.
 ### Bug Fixes
 
 - *(ci)* Add packages:read permission to deploy job by [@mchmarny](https://github.com/mchmarny)
-- *(infra)* Restore eidos-tf-state GCP bucket name by [@mchmarny](https://github.com/mchmarny)
 
 ## [0.7.4] - 2026-02-21
 
@@ -49,10 +48,6 @@ All notable changes to this project will be documented in this file.
 - *(ci)* Add ClamAV malware scanning GitHub Action  by [@dims](https://github.com/dims)
 - Add two-phase expected resource auto-discovery to validator  by [@xdu31](https://github.com/xdu31)
 - Add support for workload-gate and workload-selector  by [@ayuskauskas](https://github.com/ayuskauskas)
-
-### Other
-
-- Eidos → aicr (AI Cluster Runtime) by [@mchmarny](https://github.com/mchmarny)
 
 ### Refactor
 
