@@ -330,6 +330,7 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
+      packages: read
       id-token: write
     env:
       IDENTITY_PROVIDER: 'projects/116689922666/locations/global/workloadIdentityPools/github-actions-pool/providers/github-actions-provider'
