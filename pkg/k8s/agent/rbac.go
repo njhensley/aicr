@@ -16,6 +16,7 @@ package agent
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/NVIDIA/aicr/pkg/errors"
 	"github.com/NVIDIA/aicr/pkg/k8s"
@@ -39,8 +40,7 @@ func (d *Deployer) ensureServiceAccount(ctx context.Context) error {
 	return k8s.IgnoreAlreadyExists(err)
 }
 
-// ensureRole creates the Role for ConfigMap access.
-// If the Role already exists, this is a no-op (idempotent).
+// ensureRole creates or updates the Role for ConfigMap access.
 func (d *Deployer) ensureRole(ctx context.Context) error {
 	role := &rbacv1.Role{
 		ObjectMeta: metav1.ObjectMeta{
@@ -72,8 +72,7 @@ func (d *Deployer) ensureRole(ctx context.Context) error {
 	return err
 }
 
-// ensureRoleBinding creates the RoleBinding to bind the Role to the ServiceAccount.
-// If the RoleBinding already exists, this is a no-op (idempotent).
+// ensureRoleBinding creates or updates the RoleBinding to bind the Role to the ServiceAccount.
 func (d *Deployer) ensureRoleBinding(ctx context.Context) error {
 	rb := &rbacv1.RoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
@@ -108,9 +107,8 @@ func (d *Deployer) ensureRoleBinding(ctx context.Context) error {
 // helmSecretRoleName is the name used for per-namespace Helm secrets Roles and RoleBindings.
 const helmSecretRoleName = "aicr-helm-secrets"
 
-// ensureClusterRole creates the ClusterRole for node and cluster-wide resource access.
+// ensureClusterRole creates or updates the ClusterRole for node and cluster-wide resource access.
 // Secrets access is only included when HelmAllNamespaces is true.
-// If the ClusterRole already exists, this is a no-op (idempotent).
 func (d *Deployer) ensureClusterRole(ctx context.Context) error {
 	rules := []rbacv1.PolicyRule{
 		{
@@ -163,8 +161,17 @@ func (d *Deployer) ensureClusterRole(ctx context.Context) error {
 
 // ensureHelmSecretRoles creates per-namespace Roles and RoleBindings for Helm secrets access.
 // Each namespace gets a Role with secrets get/list and a RoleBinding to the agent ServiceAccount.
+// Namespaces that do not exist are skipped so validation can run before all recipe components are installed.
 func (d *Deployer) ensureHelmSecretRoles(ctx context.Context) error {
 	for _, ns := range d.config.HelmNamespaces {
+		_, err := d.clientset.CoreV1().Namespaces().Get(ctx, ns, metav1.GetOptions{})
+		if err != nil {
+			if apierrors.IsNotFound(err) {
+				slog.Debug("skipping Helm secrets RBAC for non-existent namespace", "namespace", ns)
+				continue
+			}
+			return errors.Wrap(errors.ErrCodeInternal, "failed to check namespace existence", err)
+		}
 		if err := d.ensureHelmSecretRole(ctx, ns); err != nil {
 			return err
 		}
@@ -253,8 +260,7 @@ func (d *Deployer) deleteHelmSecretRoles(ctx context.Context) error {
 	return nil
 }
 
-// ensureClusterRoleBinding creates the ClusterRoleBinding to bind the ClusterRole to the ServiceAccount.
-// If the ClusterRoleBinding already exists, this is a no-op (idempotent).
+// ensureClusterRoleBinding creates or updates the ClusterRoleBinding to bind the ClusterRole to the ServiceAccount.
 func (d *Deployer) ensureClusterRoleBinding(ctx context.Context) error {
 	crb := &rbacv1.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
