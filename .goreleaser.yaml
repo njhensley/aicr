@@ -152,14 +152,11 @@ changelog:
       - "^chore: readme"
       - "^chore: bump version"
   groups:
-    - title: Features
+    - title: "New Features"
       regexp: '^.*?feat(\([[:word:]]+\))??!?:.+$'
       order: 0
-    - title: "Tasks"
-      regexp: '^.*?chore(\([[:word:]]+\))??!?:.+$'
+    - title: "Bug Fixes"
+      regexp: '^.*?(fix|bug)(\([[:word:]]+\))??!?:.+$'
       order: 1
-    - title: "Bug fixes"
-      regexp: '^.*?bug(\([[:word:]]+\))??!?:.+$'
-      order: 1
-    - title: Others
+    - title: "Other Tasks"
       order: 999

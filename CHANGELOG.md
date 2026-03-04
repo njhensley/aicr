@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [0.8.2] - 2026-03-04
 
+### New Features
+
+- *(skyhook-customization)* Add nvidia-setup to install efa, raid, chrony, kernel  by [@ayuskauskas](https://github.com/ayuskauskas)
+- Add NodeTopology collector for cluster-wide taint/label capture  by [@mchmarny](https://github.com/mchmarny)
+
 ### Bug Fixes
 
 - *(validator)* Propagate tolerations and node selectors to validation phase Jobs  by [@nvidiajeff](https://github.com/nvidiajeff)
@@ -15,28 +20,19 @@ All notable changes to this project will be documented in this file.
 - *(recipes)* Remove gdrcopy version pin from GPU Operator defaults  by [@yuanchen8911](https://github.com/yuanchen8911)
 - *(cli)* Remove --privileged from validate agent flags test by [@mchmarny](https://github.com/mchmarny)
 
-### Features
-
-- *(skyhook-customization)* Add nvidia-setup to install efa, raid, chrony, kernel  by [@ayuskauskas](https://github.com/ayuskauskas)
-- Add NodeTopology collector for cluster-wide taint/label capture  by [@mchmarny](https://github.com/mchmarny)
-
-### Other
-
-- Adding myself to .github/copy-pr-bot.yaml 
-
-Signed-off-by: Dr. Stefan Schimanski <stefan.schimanski@gmail.com> by [@sttts](https://github.com/sttts)
-
-### Refactor
+### Other Tasks
 
 - Consolidate pod utilities, add HTTP client factory, split phases.go by [@mchmarny](https://github.com/mchmarny)
 - *(validator)* Lift RBAC and ConfigMap setup out of per-phase loop in ValidatePhases by [@mchmarny](https://github.com/mchmarny)
-
-### Tasks
-
-- Update readme by [@mchmarny](https://github.com/mchmarny)
 - Update copyright year to 2026 across all source files by [@mchmarny](https://github.com/mchmarny)
 
 ## [0.8.1] - 2026-03-02
+
+### New Features
+
+- Adding nccl test  by [@iamkhaledh](https://github.com/iamkhaledh)
+- *(validator)* Invoke chainsaw binary for health checks and add gpu-operator pod health check  by [@xdu31](https://github.com/xdu31)
+- *(recipes)* Upgrade dynamo-platform to v0.9.0 and disable etcd/nats  by [@yuanchen8911](https://github.com/yuanchen8911)
 
 ### Bug Fixes
 
@@ -54,13 +50,7 @@ Signed-off-by: Dr. Stefan Schimanski <stefan.schimanski@gmail.com> by [@sttts](h
 - *(evidence)* Simplify HPA conformance test to scale-up only  by [@yuanchen8911](https://github.com/yuanchen8911)
 - *(skyhook-customizations)* Update tuning to 0.2.2 which fixes tuning profile to be final override  by [@ayuskauskas](https://github.com/ayuskauskas)
 
-### Features
-
-- Adding nccl test  by [@iamkhaledh](https://github.com/iamkhaledh)
-- *(validator)* Invoke chainsaw binary for health checks and add gpu-operator pod health check  by [@xdu31](https://github.com/xdu31)
-- *(recipes)* Upgrade dynamo-platform to v0.9.0 and disable etcd/nats  by [@yuanchen8911](https://github.com/yuanchen8911)
-
-### Other
+### Other Tasks
 
 - Add atif1996 to copy-pr-bot trusted users 
 
@@ -69,6 +59,12 @@ Co-authored-by: Atif Mahmood <atif1996@users.noreply.github.com> by [@atif1996](
 
 ## [0.8.0] - 2026-02-27
 
+### New Features
+
+- *(validator)* Auto-discover expected resources from kustomize sources via krusty SDK  by [@xdu31](https://github.com/xdu31)
+- Bundle time --nodes flag to let components know about expected cluster size  by [@ayuskauskas](https://github.com/ayuskauskas)
+- *(attestation)* Bundle attestation and verification of provenance  by [@lockwobr](https://github.com/lockwobr)
+
 ### Bug Fixes
 
 - *(recipes)* Unpin gpu-operator and add KAI runtimeClassName workaround  by [@yuanchen8911](https://github.com/yuanchen8911)
@@ -76,18 +72,10 @@ Co-authored-by: Atif Mahmood <atif1996@users.noreply.github.com> by [@atif1996](
 - Enforce established patterns across codebase by [@mchmarny](https://github.com/mchmarny)
 - Correct namespace check, stale comments, and dead test code in k8s/agent by [@mchmarny](https://github.com/mchmarny)
 
-### CI/CD
+### Other Tasks
 
 - *(e2e)* Replace Tilt with direct ko+kubectl and host-side validator compilation  by [@mchmarny](https://github.com/mchmarny)
 - Consolidate qualification jobs and remove duplicate tests  by [@mchmarny](https://github.com/mchmarny)
-
-### Features
-
-- *(validator)* Auto-discover expected resources from kustomize sources via krusty SDK  by [@xdu31](https://github.com/xdu31)
-- Bundle time --nodes flag to let components know about expected cluster size  by [@ayuskauskas](https://github.com/ayuskauskas)
-- *(attestation)* Bundle attestation and verification of provenance  by [@lockwobr](https://github.com/lockwobr)
-
-### Tasks
 
 - Upgrade deps by [@mchmarny](https://github.com/mchmarny)
 - Remove dead code, fix best practices, add CLI flag categories by [@mchmarny](https://github.com/mchmarny)
@@ -95,19 +83,13 @@ Co-authored-by: Atif Mahmood <atif1996@users.noreply.github.com> by [@atif1996](
 
 ## [0.7.11] - 2026-02-26
 
-### CI/CD
+### Other Tasks
 
 - *(release)* Restructure on-tag pipeline for strict gating by [@mchmarny](https://github.com/mchmarny)
 
 ## [0.7.10] - 2026-02-26
 
-### Bug Fixes
-
-- *(ci)* Add missing contents:read permission to PR comment job by [@mchmarny](https://github.com/mchmarny)
-- *(install)* Improve UX with supply chain security messaging by [@mchmarny](https://github.com/mchmarny)
-- *(validator)* Address lint issues in deployment materialization by [@mchmarny](https://github.com/mchmarny)
-
-### Features
+### New Features
 
 - Integrate CNCF submission evidence collection into aicr validate  by [@yuanchen8911](https://github.com/yuanchen8911)
 - *(site)* Landing page refresh, dark mode, and version dropdown by [@mchmarny](https://github.com/mchmarny)
@@ -117,13 +99,17 @@ Co-authored-by: Atif Mahmood <atif1996@users.noreply.github.com> by [@atif1996](
 - *(validator)* Implement component materialization with tests by [@mchmarny](https://github.com/mchmarny)
 - *(validator)* Integrate component materialization into deployment phase by [@mchmarny](https://github.com/mchmarny)
 
-### Other
+### Bug Fixes
+
+- *(ci)* Add missing contents:read permission to PR comment job by [@mchmarny](https://github.com/mchmarny)
+- *(install)* Improve UX with supply chain security messaging by [@mchmarny](https://github.com/mchmarny)
+- *(validator)* Address lint issues in deployment materialization by [@mchmarny](https://github.com/mchmarny)
+
+### Other Tasks
 
 - *(chainsaw)* Add deployment materialization e2e tests by [@mchmarny](https://github.com/mchmarny)
 - *(chainsaw)* Update CUJ1 mock snapshot with full helm data by [@mchmarny](https://github.com/mchmarny)
 - *(kwok)* Add deployment materialization verification step by [@mchmarny](https://github.com/mchmarny)
-
-### Tasks
 
 - Fix gofmt alignment and add missing license headers by [@mchmarny](https://github.com/mchmarny)
 
@@ -136,19 +122,7 @@ Co-authored-by: Atif Mahmood <atif1996@users.noreply.github.com> by [@atif1996](
 
 ## [0.7.8] - 2026-02-25
 
-### Bug Fixes
-
-- *(conformance)* Wrap PRODUCT.yaml lines for yamllint  by [@dims](https://github.com/dims)
-- *(agent)* Scope secrets RBAC and robust helm-values check  by [@mchmarny](https://github.com/mchmarny)
-- Enforce error handling, polling, and deletion policy patterns  by [@mchmarny](https://github.com/mchmarny)
-- *(ci)* Deduplicate tool installs and fix broken workflows  by [@mchmarny](https://github.com/mchmarny)
-- *(docs)* Enterprise CI, custom domain, NVIDIA brand theme by [@mchmarny](https://github.com/mchmarny)
-
-### CI/CD
-
-- Add GPU conformance test workflow to main  by [@dims](https://github.com/dims)
-
-### Features
+### New Features
 
 - *(evidence)* Add artifact capture for conformance evidence  by [@dims](https://github.com/dims)
 - *(docs)* Add CNCF AI conformance submission for v1.34  by [@yuanchen8911](https://github.com/yuanchen8911)
@@ -160,7 +134,17 @@ Co-authored-by: Atif Mahmood <atif1996@users.noreply.github.com> by [@atif1996](
 - *(validator)* Add Chainsaw-style health check assertions via --data flag  by [@xdu31](https://github.com/xdu31)
 - *(docs)* Add Hugo + Docsy documentation site  by [@mchmarny](https://github.com/mchmarny)
 
-### Tasks
+### Bug Fixes
+
+- *(conformance)* Wrap PRODUCT.yaml lines for yamllint  by [@dims](https://github.com/dims)
+- *(agent)* Scope secrets RBAC and robust helm-values check  by [@mchmarny](https://github.com/mchmarny)
+- Enforce error handling, polling, and deletion policy patterns  by [@mchmarny](https://github.com/mchmarny)
+- *(ci)* Deduplicate tool installs and fix broken workflows  by [@mchmarny](https://github.com/mchmarny)
+- *(docs)* Enterprise CI, custom domain, NVIDIA brand theme by [@mchmarny](https://github.com/mchmarny)
+
+### Other Tasks
+
+- Add GPU conformance test workflow to main  by [@dims](https://github.com/dims)
 
 - Clean up CUJs by [@mchmarny](https://github.com/mchmarny)
 - Clean up change log by [@mchmarny](https://github.com/mchmarny)
@@ -169,23 +153,7 @@ Co-authored-by: Atif Mahmood <atif1996@users.noreply.github.com> by [@atif1996](
 
 ## [0.7.7] - 2026-02-24
 
-### Bug Fixes
-
-- Resolve gosec lint issues and bump golangci-lint to v2.10.1 by [@mchmarny](https://github.com/mchmarny)
-- Guard against empty path in NewFileReader after filepath.Clean by [@mchmarny](https://github.com/mchmarny)
-- Pass cluster K8s version to Helm SDK chart rendering  by [@mchmarny](https://github.com/mchmarny)
-- *(e2e)* Update deploy-agent test for current snapshot CLI  by [@mchmarny](https://github.com/mchmarny)
-- Prevent snapshot agent Job from nesting agent deployment  by [@mchmarny](https://github.com/mchmarny)
-
-### Build
-
-- Release v0.7.7 by [@mchmarny](https://github.com/mchmarny)
-
-### CI/CD
-
-- Harden workflows and reduce duplication  by [@mchmarny](https://github.com/mchmarny)
-
-### Features
+### New Features
 
 - *(ci)* Add metrics-driven cluster autoscaling validation with Karpenter + KWOK  by [@dims](https://github.com/dims)
 - *(validator)* Add Go-based CNCF AI conformance checks  by [@dims](https://github.com/dims)
@@ -199,15 +167,6 @@ Co-authored-by: Atif Mahmood <atif1996@users.noreply.github.com> by [@atif1996](
 - Add cluster autoscaling evidence for CNCF AI Conformance  by [@yuanchen8911](https://github.com/yuanchen8911)
 - *(ci)* Binary attestation with SLSA Build Provenance v1  by [@lockwobr](https://github.com/lockwobr)
 
-### Tasks
-
-- *(ci)* Remove redundant DRA test steps from inference workflow  by [@dims](https://github.com/dims)
-- Upgrade Go to 1.26.0  by [@mchmarny](https://github.com/mchmarny)
-- *(validator)* Remove Job-based checks from readiness phase, keep constraint-only gate  by [@xdu31](https://github.com/xdu31)
-- *(recipe)* Add conformance recipe invariant tests  by [@dims](https://github.com/dims)
-
-## [0.7.7] - 2026-02-24
-
 ### Bug Fixes
 
 - Resolve gosec lint issues and bump golangci-lint to v2.10.1 by [@mchmarny](https://github.com/mchmarny)
@@ -216,11 +175,20 @@ Co-authored-by: Atif Mahmood <atif1996@users.noreply.github.com> by [@atif1996](
 - *(e2e)* Update deploy-agent test for current snapshot CLI  by [@mchmarny](https://github.com/mchmarny)
 - Prevent snapshot agent Job from nesting agent deployment  by [@mchmarny](https://github.com/mchmarny)
 
-### CI/CD
+### Other Tasks
+
+- Release v0.7.7 by [@mchmarny](https://github.com/mchmarny)
 
 - Harden workflows and reduce duplication  by [@mchmarny](https://github.com/mchmarny)
 
-### Features
+- *(ci)* Remove redundant DRA test steps from inference workflow  by [@dims](https://github.com/dims)
+- Upgrade Go to 1.26.0  by [@mchmarny](https://github.com/mchmarny)
+- *(validator)* Remove Job-based checks from readiness phase, keep constraint-only gate  by [@xdu31](https://github.com/xdu31)
+- *(recipe)* Add conformance recipe invariant tests  by [@dims](https://github.com/dims)
+
+## [0.7.7] - 2026-02-24
+
+### New Features
 
 - *(ci)* Add metrics-driven cluster autoscaling validation with Karpenter + KWOK  by [@dims](https://github.com/dims)
 - *(validator)* Add Go-based CNCF AI conformance checks  by [@dims](https://github.com/dims)
@@ -233,7 +201,17 @@ Co-authored-by: Atif Mahmood <atif1996@users.noreply.github.com> by [@atif1996](
 - *(collector)* Add Helm release and ArgoCD Application collectors  by [@mchmarny](https://github.com/mchmarny)
 - Add cluster autoscaling evidence for CNCF AI Conformance  by [@yuanchen8911](https://github.com/yuanchen8911)
 
-### Tasks
+### Bug Fixes
+
+- Resolve gosec lint issues and bump golangci-lint to v2.10.1 by [@mchmarny](https://github.com/mchmarny)
+- Guard against empty path in NewFileReader after filepath.Clean by [@mchmarny](https://github.com/mchmarny)
+- Pass cluster K8s version to Helm SDK chart rendering  by [@mchmarny](https://github.com/mchmarny)
+- *(e2e)* Update deploy-agent test for current snapshot CLI  by [@mchmarny](https://github.com/mchmarny)
+- Prevent snapshot agent Job from nesting agent deployment  by [@mchmarny](https://github.com/mchmarny)
+
+### Other Tasks
+
+- Harden workflows and reduce duplication  by [@mchmarny](https://github.com/mchmarny)
 
 - *(recipe)* Add conformance recipe invariant tests  by [@dims](https://github.com/dims)
 - *(validator)* Remove Job-based checks from readiness phase, keep constraint-only gate  by [@xdu31](https://github.com/xdu31)
@@ -242,7 +220,7 @@ Co-authored-by: Atif Mahmood <atif1996@users.noreply.github.com> by [@atif1996](
 
 ## [0.7.6] - 2026-02-21
 
-### Tasks
+### Other Tasks
 
 - Codebase consistency fixes and test coverage  by [@mchmarny](https://github.com/mchmarny)
 - Rename cleanup by [@mchmarny](https://github.com/mchmarny)
@@ -257,6 +235,23 @@ Co-authored-by: Atif Mahmood <atif1996@users.noreply.github.com> by [@atif1996](
 - *(ci)* Add packages:read permission to deploy job by [@mchmarny](https://github.com/mchmarny)
 
 ## [0.7.4] - 2026-02-21
+
+### New Features
+
+- *(ci)* Add OSS community automation workflows by [@mchmarny](https://github.com/mchmarny)
+- Add CUJ2 inference demo chat UI and update CUJ2 instructions  by [@yuanchen8911](https://github.com/yuanchen8911)
+- Add DRA and gang scheduling test manifests for CNCF AI conformance  by [@yuanchen8911](https://github.com/yuanchen8911)
+- *(ci)* Collect AI conformance evidence in H100 smoke test  by [@dims](https://github.com/dims)
+- *(ci)* Add DRA GPU allocation test to H100 smoke test  by [@dims](https://github.com/dims)
+- Add expected-resources deployment check for validating Kubernetes resources exist  by [@xdu31](https://github.com/xdu31)
+- Add CNCF AI Conformance evidence collection   by [@yuanchen8911](https://github.com/yuanchen8911)
+- *(skyhook)* Temporarily remove skyhook tuning due to bugs  by [@ayuskauskas](https://github.com/ayuskauskas)
+- Add GPU training CI workflow with gang scheduling test  by [@dims](https://github.com/dims)
+- *(ci)* Add CNCF AI conformance validations to inference workflow  by [@dims](https://github.com/dims)
+- *(ci)* Add HPA pod autoscaling validation to inference workflow  by [@dims](https://github.com/dims)
+- *(ci)* Add ClamAV malware scanning GitHub Action  by [@dims](https://github.com/dims)
+- Add two-phase expected resource auto-discovery to validator  by [@xdu31](https://github.com/xdu31)
+- Add support for workload-gate and workload-selector  by [@ayuskauskas](https://github.com/ayuskauskas)
 
 ### Bug Fixes
 
@@ -280,30 +275,11 @@ Co-authored-by: Atif Mahmood <atif1996@users.noreply.github.com> by [@atif1996](
 - Move DRA controller nodeAffinity override to EKS overlay  by [@yuanchen8911](https://github.com/yuanchen8911)
 - *(ci)* Use PR number in KWOK concurrency group by [@mchmarny](https://github.com/mchmarny)
 
-### Features
-
-- *(ci)* Add OSS community automation workflows by [@mchmarny](https://github.com/mchmarny)
-- Add CUJ2 inference demo chat UI and update CUJ2 instructions  by [@yuanchen8911](https://github.com/yuanchen8911)
-- Add DRA and gang scheduling test manifests for CNCF AI conformance  by [@yuanchen8911](https://github.com/yuanchen8911)
-- *(ci)* Collect AI conformance evidence in H100 smoke test  by [@dims](https://github.com/dims)
-- *(ci)* Add DRA GPU allocation test to H100 smoke test  by [@dims](https://github.com/dims)
-- Add expected-resources deployment check for validating Kubernetes resources exist  by [@xdu31](https://github.com/xdu31)
-- Add CNCF AI Conformance evidence collection   by [@yuanchen8911](https://github.com/yuanchen8911)
-- *(skyhook)* Temporarily remove skyhook tuning due to bugs  by [@ayuskauskas](https://github.com/ayuskauskas)
-- Add GPU training CI workflow with gang scheduling test  by [@dims](https://github.com/dims)
-- *(ci)* Add CNCF AI conformance validations to inference workflow  by [@dims](https://github.com/dims)
-- *(ci)* Add HPA pod autoscaling validation to inference workflow  by [@dims](https://github.com/dims)
-- *(ci)* Add ClamAV malware scanning GitHub Action  by [@dims](https://github.com/dims)
-- Add two-phase expected resource auto-discovery to validator  by [@xdu31](https://github.com/xdu31)
-- Add support for workload-gate and workload-selector  by [@ayuskauskas](https://github.com/ayuskauskas)
-
-### Refactor
+### Other Tasks
 
 - Move examples/demos to project root demos directory by [@mchmarny](https://github.com/mchmarny)
 - Move kai-scheduler and DRA driver to base overlay for CNCF AI conformance  by [@yuanchen8911](https://github.com/yuanchen8911)
 - Rename PreDeployment to Readiness across codebase and docs  by [@xdu31](https://github.com/xdu31)
-
-### Tasks
 
 - Update demos by [@mchmarny](https://github.com/mchmarny)
 - Update s3c demo by [@mchmarny](https://github.com/mchmarny)
@@ -329,38 +305,36 @@ Co-authored-by: Atif Mahmood <atif1996@users.noreply.github.com> by [@atif1996](
 
 ## [0.7.1] - 2026-02-18
 
-### Bug Fixes
-
-- Enable GPU resources and upgrade DRA driver to 25.12.0  by [@yuanchen8911](https://github.com/yuanchen8911)
-
-### Features
+### New Features
 
 - Add test isolation to prevent production cluster access by [@mchmarny](https://github.com/mchmarny)
 - Multi-stage Dockerfile.validator with CUDA runtime base by [@mchmarny](https://github.com/mchmarny)
 
-### Refactor
+### Bug Fixes
+
+- Enable GPU resources and upgrade DRA driver to 25.12.0  by [@yuanchen8911](https://github.com/yuanchen8911)
+
+### Other Tasks
 
 - *(phase1)* Fix best practice violations by [@mchmarny](https://github.com/mchmarny)
 - *(phase2)* Extract duplicated code to pkg/k8s/pod by [@mchmarny](https://github.com/mchmarny)
 - *(phase3)* Optimize Kubernetes API access and simplify HTTPReader by [@mchmarny](https://github.com/mchmarny)
 - *(phase4)* Polish codebase with cleanup and TODO resolution by [@mchmarny](https://github.com/mchmarny)
 
-### Tasks
-
 - Clean up change log by [@mchmarny](https://github.com/mchmarny)
 - Cleanup docker file by [@mchmarny](https://github.com/mchmarny)
 
 ## [0.7.0] - 2026-02-18
 
+### New Features
+
+- *(ci)* Add Dynamo vLLM smoke test and fix etcd/NATS naming  by [@dims](https://github.com/dims)
+- Feat/adding smi test by  [@iamkhaledh](https://github.com/iamkhaledh), [@jaydu](https://github.com/jaydu)
+
 ### Bug Fixes
 
 - Remove fullnameOverride from dynamo-platform values  by [@yuanchen8911](https://github.com/yuanchen8911)
 - Disable CDI in GPU Operator for dynamo inference recipes  by [@yuanchen8911](https://github.com/yuanchen8911)
-
-### Features
-
-- *(ci)* Add Dynamo vLLM smoke test and fix etcd/NATS naming  by [@dims](https://github.com/dims)
-- Feat/adding smi test by  [@iamkhaledh](https://github.com/iamkhaledh), [@jaydu](https://github.com/jaydu)
 
 ## [0.6.4] - 2026-02-17
 
@@ -369,16 +343,21 @@ Co-authored-by: Atif Mahmood <atif1996@users.noreply.github.com> by [@atif1996](
 - Default validation-namespace to namespace when not explicitly set  by [@mchmarny](https://github.com/mchmarny)
 - Build aicr CLI in validator image and update binary path  by [@mchmarny](https://github.com/mchmarny)
 
-### Refactor
+### Other Tasks
 
 - *(ci)* Decompose gpu-smoke-test into composable actions  by [@dims](https://github.com/dims)
-
-### Tasks
 
 - Correct test command prior to PR  by [@mchmarny](https://github.com/mchmarny)
 - Clean changelog by [@mchmarny](https://github.com/mchmarny)
 
 ## [0.6.3] - 2026-02-17
+
+### New Features
+
+- *(ci)* Add CUJ2 inference workflow to H100 smoke test  by [@dims](https://github.com/dims)
+- Add kind-inference overlays and chainsaw health checks  by [@dims](https://github.com/dims)
+- Skyhook gb200  by [@ayuskauskas](https://github.com/ayuskauskas)
+- Validator generator, add test coverage, wire image-pull-secret  by [@mchmarny](https://github.com/mchmarny)
 
 ### Bug Fixes
 
@@ -387,14 +366,7 @@ Co-authored-by: Atif Mahmood <atif1996@users.noreply.github.com> by [@atif1996](
 - *(ci)* Increase GPU Operator ClusterPolicy timeout to 10 minutes by [@mchmarny](https://github.com/mchmarny)
 - *(ci)* Harden H100 smoke test workflow  by [@dims](https://github.com/dims)
 
-### Features
-
-- *(ci)* Add CUJ2 inference workflow to H100 smoke test  by [@dims](https://github.com/dims)
-- Add kind-inference overlays and chainsaw health checks  by [@dims](https://github.com/dims)
-- Skyhook gb200  by [@ayuskauskas](https://github.com/ayuskauskas)
-- Validator generator, add test coverage, wire image-pull-secret  by [@mchmarny](https://github.com/mchmarny)
-
-### Refactor
+### Other Tasks
 
 - Remove dead code, fix perf hotspots, add test coverage by [@mchmarny](https://github.com/mchmarny)
 - *(ci)* Extract gpu-cluster-setup action, let H100 deploy GPU operator via bundle  by [@dims](https://github.com/dims)
@@ -402,20 +374,18 @@ Co-authored-by: Atif Mahmood <atif1996@users.noreply.github.com> by [@atif1996](
 
 ## [0.6.2] - 2026-02-13
 
-### CI/CD
+### Other Tasks
 
 - Add actions:read permission to security-scan job by [@mchmarny](https://github.com/mchmarny)
 - Eliminate hardcoded versions and consolidate CI workflows by [@mchmarny](https://github.com/mchmarny)
 - Harden checkout credentials, add checksum verification, fail-fast off by [@mchmarny](https://github.com/mchmarny)
 - Skip SBOM generation in packaging dry run by [@mchmarny](https://github.com/mchmarny)
 
-### Tasks
-
 - Clean up changelog by [@mchmarny](https://github.com/mchmarny)
 
 ## [0.6.1] - 2026-02-13
 
-### Features
+### New Features
 
 - *(skyhook-customizations)* Use overrides and switch to nvidia_tuned  by [@ayuskauskas](https://github.com/ayuskauskas)
 - Vendor Gateway API Inference Extension CRDs (v1.3.0)  by [@yuanchen8911](https://github.com/yuanchen8911)
@@ -428,14 +398,12 @@ Co-authored-by: Atif Mahmood <atif1996@users.noreply.github.com> by [@atif1996](
 - Add nats storageClass for EKS dynamo deployment  by [@yuanchen8911](https://github.com/yuanchen8911)
 - Mount host /etc/os-release in privileged snapshot agent  by [@yuanchen8911](https://github.com/yuanchen8911)
 
-### CI/CD
+### Other Tasks
 
 - Add GPU smoke test workflow using nvkind  by [@dims](https://github.com/dims)
 - Enable copy-pr-bot by [@dims](https://github.com/dims)
 - Setup vendoring for golang  by [@lockwobr](https://github.com/lockwobr)
 - Deduplicate test jobs into reusable qualification workflow by [@mchmarny](https://github.com/mchmarny)
-
-### Tasks
 
 - Exclude git from sandbox for GPG commit signing by [@mchmarny](https://github.com/mchmarny)
 - Code quality cleanup across codebase  by [@mchmarny](https://github.com/mchmarny)
@@ -444,16 +412,16 @@ Co-authored-by: Atif Mahmood <atif1996@users.noreply.github.com> by [@atif1996](
 
 ## [0.5.16] - 2026-02-12
 
+### New Features
+
+- Add tools/describe for overlay composition visualization by [@mchmarny](https://github.com/mchmarny)
+- Restructure inference overlay hierarchy  by [@yuanchen8911](https://github.com/yuanchen8911)
+
 ### Bug Fixes
 
 - Use POSIX-compatible redirects in KWOK parallel test script  by [@yuanchen8911](https://github.com/yuanchen8911)
 - KubeFlow patches  by [@coffeepac](https://github.com/coffeepac)
   
-### Features
-
-- Add tools/describe for overlay composition visualization by [@mchmarny](https://github.com/mchmarny)
-- Restructure inference overlay hierarchy  by [@yuanchen8911](https://github.com/yuanchen8911)
-
 ## [0.5.15] - 2026-02-11
 
 ### Bug Fixes
@@ -470,7 +438,7 @@ Co-authored-by: Atif Mahmood <atif1996@users.noreply.github.com> by [@atif1996](
 
 ## [0.5.13] - 2026-02-11
 
-### Features
+### New Features
 
 - Implement Job-based validation framework with test wrapper infrastructure  by [@xdu31](https://github.com/xdu31)
 - Add kai-scheduler component for gang scheduling  by [@yuanchen8911](https://github.com/yuanchen8911)
@@ -487,7 +455,7 @@ Co-authored-by: Atif Mahmood <atif1996@users.noreply.github.com> by [@atif1996](
 - Use upstream default namespaces for components  by [@yuanchen8911](https://github.com/yuanchen8911)
 - Update kubeflow paths  by [@coffeepac](https://github.com/coffeepac)
 
-### Tasks
+### Other Tasks
 
 - Split validator docker build into per-arch images with manifest list by [@mchmarny](https://github.com/mchmarny)
 
@@ -502,7 +470,7 @@ Co-authored-by: Atif Mahmood <atif1996@users.noreply.github.com> by [@atif1996](
 - Set fullnameOverride to remove aicr-stack- prefix  by [@yuanchen8911](https://github.com/yuanchen8911)
 - Open webhook container ports in NetworkPolicy workaround  by [@yuanchen8911](https://github.com/yuanchen8911)
 
-### Tasks
+### Other Tasks
 
 - Clean up changelog by [@mchmarny](https://github.com/mchmarny)
 - Update installation instructions by [@mchmarny](https://github.com/mchmarny)
@@ -516,7 +484,7 @@ Co-authored-by: Atif Mahmood <atif1996@users.noreply.github.com> by [@atif1996](
 
 ## [0.4.0] - 2026-02-06
 
-### Features
+### New Features
 
 - Add aws-efa component  by [@Kevin-Hawkins](https://github.com/Kevin-Hawkins)
 - Fix and improve ConfigMap and CR deployment  by [@yuanchen8911](https://github.com/yuanchen8911)
@@ -535,7 +503,7 @@ Co-authored-by: Atif Mahmood <atif1996@users.noreply.github.com> by [@atif1996](
 - Prevent driver OOMKill during kernel module compilation  by [@yuanchen8911](https://github.com/yuanchen8911)
 - Update CDI configuration and DEVICE_LIST_STRATEGY for gpu-operator  by [@yuanchen8911](https://github.com/yuanchen8911)
 
-### Tasks
+### Other Tasks
 
 - Rename platform pytorch to kubeflow and add kubeflow-trainer component  by [@mchmarny](https://github.com/mchmarny)
 - Reduce e2e test duplication and add CUJ1 coverage by [@mchmarny](https://github.com/mchmarny)
@@ -544,28 +512,26 @@ Co-authored-by: Atif Mahmood <atif1996@users.noreply.github.com> by [@atif1996](
 
 ## [0.3.3] - 2026-02-04
 
-### Tasks
+### Other Tasks
 
 - Adjust release commit message order by [@mchmarny](https://github.com/mchmarny)
 
 ## [0.3.2] - 2026-02-04
 
-### Tasks
+### Other Tasks
 
 - Include non-conventional commits in changelog by [@mchmarny](https://github.com/mchmarny)
 - Update release commit message format by [@mchmarny](https://github.com/mchmarny)
 
 ## [0.3.1] - 2026-02-04
 
-### Features
+### New Features
 
 - Add aws-efa component  by [@Kevin-Hawkins](https://github.com/Kevin-Hawkins)
 
-### Refactor
+### Other Tasks
 
 - Use structured errors and improve test coverage by [@mchmarny](https://github.com/mchmarny)
-
-### Tasks
 
 - Remove daily scan from blocking prs by [@mchmarny](https://github.com/mchmarny)
 - Add Claude instructions to not co-authored commits by [@mchmarny](https://github.com/mchmarny)
@@ -574,6 +540,13 @@ Co-authored-by: Atif Mahmood <atif1996@users.noreply.github.com> by [@atif1996](
 
 ## [0.3.0] - 2026-02-04
 
+### New Features
+
+- Add coverage delta reporting for PRs  by [@dims](https://github.com/dims)
+- Link GitHub usernames in changelog  by [@dims](https://github.com/dims)
+- Add structured CLI exit codes for predictable scripting  by [@dims](https://github.com/dims)
+- Add fullnameOverride to remove release prefix from deployment names  by [@yuanchen8911](https://github.com/yuanchen8911)
+
 ### Bug Fixes
 
 - Add contents:read permission for coverage comment workflow  by [@dims](https://github.com/dims)
@@ -581,7 +554,7 @@ Co-authored-by: Atif Mahmood <atif1996@users.noreply.github.com> by [@atif1996](
 - Rename prometheus component to kube-prometheus-stack  by [@yuanchen8911](https://github.com/yuanchen8911)
 - Remove namespaceOverride from nvidia-dra-driver-gpu values  by [@yuanchen8911](https://github.com/yuanchen8911)
 
-### CI/CD
+### Other Tasks
 
 - Add license verification workflow  by [@dims](https://github.com/dims)
 - Add license verification workflow  by [@dims](https://github.com/dims)
@@ -590,15 +563,6 @@ Co-authored-by: Atif Mahmood <atif1996@users.noreply.github.com> by [@atif1996](
 - Trigger workflows on branch create for copy-pr-bot  by [@dims](https://github.com/dims)
 - Skip workflows on forks to prevent duplicate check runs  by [@dims](https://github.com/dims)
 - Match nvsentinel workflow pattern for copy-pr-bot  by [@dims](https://github.com/dims)
-
-### Features
-
-- Add coverage delta reporting for PRs  by [@dims](https://github.com/dims)
-- Link GitHub usernames in changelog  by [@dims](https://github.com/dims)
-- Add structured CLI exit codes for predictable scripting  by [@dims](https://github.com/dims)
-- Add fullnameOverride to remove release prefix from deployment names  by [@yuanchen8911](https://github.com/yuanchen8911)
-
-### Tasks
 
 - Rename default claude file to follow convention by [@mchmarny](https://github.com/mchmarny)
 - Add .claude/settings.local.json to ignore by [@mchmarny](https://github.com/mchmarny)
@@ -613,19 +577,19 @@ Co-authored-by: Atif Mahmood <atif1996@users.noreply.github.com> by [@atif1996](
 
 ## [0.2.1] - 2026-02-01
 
-### Bug Fixes
-
-- Use workflow_run for PR coverage comments on fork PRs  by @dims
-- Add actions:read permission for artifact download  by @dims
-
-### Features
+### New Features
 
 - Add contextcheck and depguard linters  by @dims
 - Add stale issue and PR automation  by @dims
 - Add Dependabot grouping for Kubernetes dependencies  by @dims
 - Add automatic changelog generation with git-cliff by @mchmarny
 
-### Tasks
+### Bug Fixes
+
+- Use workflow_run for PR coverage comments on fork PRs  by @dims
+- Add actions:read permission for artifact download  by @dims
+
+### Other Tasks
 
 - Add dims in maintainers by @mchmarny
 - Add owners file by @mchmarny
@@ -648,7 +612,7 @@ Co-authored-by: Atif Mahmood <atif1996@users.noreply.github.com> by [@atif1996](
 
 ## [0.1.4] - 2026-01-31
 
-### Features
+### New Features
 
 - Add Artifact Registry for demo API server deployment by @mchmarny
 
@@ -664,11 +628,9 @@ Co-authored-by: Atif Mahmood <atif1996@users.noreply.github.com> by [@atif1996](
 
 - Remove KO_DOCKER_REPO that conflicts with goreleaser repositories by @mchmarny
 
-### Other
+### Other Tasks
 
 - Restore flat namespace for container images by @mchmarny
-
-### Refactor
 
 - Extract E2E tests into reusable composite action by @mchmarny
 
@@ -678,11 +640,15 @@ Co-authored-by: Atif Mahmood <atif1996@users.noreply.github.com> by [@atif1996](
 
 - Ko uppercase repository error and refactor on-tag workflow by @mchmarny
 
-### Refactor
+### Other Tasks
 
 - Migrate container images to project-specific registry path by @mchmarny
 
 ## [0.1.0] - 2026-01-31
+
+### New Features
+
+- Replace Codecov with GitHub-native coverage tracking by @mchmarny
 
 ### Bug Fixes
 
@@ -693,21 +659,13 @@ Co-authored-by: Atif Mahmood <atif1996@users.noreply.github.com> by [@atif1996](
 - Install ko from binary release instead of go install by @mchmarny
 - Strip v prefix from ko version for URL construction by @mchmarny
 
-### CI/CD
+### Other Tasks
 
 - Run test and e2e jobs concurrently by @mchmarny
 - Add notice when SARIF upload is skipped by @mchmarny
 
-### Features
-
-- Replace Codecov with GitHub-native coverage tracking by @mchmarny
-
-### Refactor
-
 - Integrate E2E tests into main CI workflow by @mchmarny
 - Split CI into unit, integration, and e2e jobs by @mchmarny
-
-### Tasks
 
 - Init repo by @mchmarny
 - Replace file-existence-action with hashFiles by @mchmarny
