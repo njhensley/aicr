@@ -251,52 +251,242 @@ func TestTemplatePath(t *testing.T) {
 		name        string
 		accelerator recipe.CriteriaAcceleratorType
 		service     recipe.CriteriaServiceType
+		variant     ncclVariant
 		filename    string
 		expected    string
 	}{
 		{
-			name:        "eks h100 runtime",
+			name:        "eks h100 runtime default",
 			accelerator: recipe.CriteriaAcceleratorH100,
 			service:     recipe.CriteriaServiceEKS,
+			variant:     variantDefault,
 			filename:    "runtime.yaml",
 			expected:    filepath.Join("testdata", "h100", "eks", "runtime.yaml"),
 		},
 		{
-			name:        "eks h100 trainjob",
+			name:        "eks h100 trainjob default",
 			accelerator: recipe.CriteriaAcceleratorH100,
 			service:     recipe.CriteriaServiceEKS,
+			variant:     variantDefault,
 			filename:    "trainjob.yaml",
 			expected:    filepath.Join("testdata", "h100", "eks", "trainjob.yaml"),
 		},
 		{
-			name:        "gke gb200",
+			name:        "gke gb200 default",
 			accelerator: recipe.CriteriaAcceleratorGB200,
 			service:     recipe.CriteriaServiceGKE,
+			variant:     variantDefault,
 			filename:    "runtime.yaml",
 			expected:    filepath.Join("testdata", "gb200", "gke", "runtime.yaml"),
 		},
 		{
-			name:        "b200 any runtime",
+			name:        "b200 any runtime default",
 			accelerator: recipe.CriteriaAcceleratorB200,
 			service:     recipe.CriteriaServiceAny,
+			variant:     variantDefault,
 			filename:    "runtime.yaml",
 			expected:    filepath.Join("testdata", "b200", "any", "runtime.yaml"),
 		},
 		{
-			name:        "gb200 any runtime",
+			name:        "gb200 any runtime default",
 			accelerator: recipe.CriteriaAcceleratorGB200,
 			service:     recipe.CriteriaServiceAny,
+			variant:     variantDefault,
 			filename:    "runtime.yaml",
 			expected:    filepath.Join("testdata", "gb200", "any", "runtime.yaml"),
+		},
+		{
+			name:        "gb200 eks NET variant",
+			accelerator: recipe.CriteriaAcceleratorGB200,
+			service:     recipe.CriteriaServiceEKS,
+			variant:     variantNET,
+			filename:    "runtime.yaml",
+			expected:    filepath.Join("testdata", "gb200", "eks", "runtime-net.yaml"),
+		},
+		{
+			name:        "gb200 eks NVLS variant",
+			accelerator: recipe.CriteriaAcceleratorGB200,
+			service:     recipe.CriteriaServiceEKS,
+			variant:     variantNVLS,
+			filename:    "runtime.yaml",
+			expected:    filepath.Join("testdata", "gb200", "eks", "runtime-nvls.yaml"),
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := templatePath(tt.accelerator, tt.service, tt.filename)
+			got := templatePath(tt.accelerator, tt.service, tt.variant, tt.filename)
 			if got != tt.expected {
 				t.Errorf("templatePath() = %q, want %q", got, tt.expected)
 			}
 		})
+	}
+}
+
+func TestVerifyTransportFromLogs(t *testing.T) {
+	// Representative NCCL 2.27 outputs captured from real GB200/EKS and
+	// EKS H100 runs. Format note: NCCL 2.27 no longer emits per-channel
+	// "[send] via NVLS" lines; the authoritative transport signals are
+	// "NCCL INFO Using network <plugin>" for NET, and "NVLS comm 0x<addr>"
+	// + "NVLS multicast support is available" for NVLS.
+	const netLog = `NCCL INFO NET/OFI Selected Provider is efa
+NCCL INFO NET/Plugin: Loaded net plugin Libfabric (v10)
+NCCL INFO Using network AWS Libfabric`
+
+	const nvlsLog = `NCCL INFO MNNVL 1 cliqueId 2 cliqueSize 8 cliqueRank 0
+NCCL INFO NVLS multicast support is available on dev 0 (NVLS_NCHANNELS 24)
+NCCL INFO comm 0xabc123 rank 0 nRanks 8 nNodes 1 localRanks 8 localRank 0 MNNVL 1
+NCCL INFO NVLS comm 0xabc123 headRank 0 nHeads 8 nvlsRanks 8 buffSize 1048576`
+
+	const socketOnlyLog = `NCCL INFO Using network Socket`
+
+	const silentLog = `no transport banners here`
+
+	const nvlsAvailableOnlyLog = `NCCL INFO NVLS multicast support is available on dev 0 (NVLS_NCHANNELS 24)
+NCCL INFO Using network Socket`
+
+	tests := []struct {
+		name    string
+		logs    string
+		variant ncclVariant
+		wantErr bool
+	}{
+		{
+			name:    "default variant never asserts",
+			logs:    silentLog,
+			variant: variantDefault,
+			wantErr: false,
+		},
+		{
+			name:    "NET variant with AWS Libfabric passes",
+			logs:    netLog,
+			variant: variantNET,
+			wantErr: false,
+		},
+		{
+			name:    "NET variant with Socket-only fails (provider plugin didn't load)",
+			logs:    socketOnlyLog,
+			variant: variantNET,
+			wantErr: true,
+		},
+		{
+			name:    "NET variant with no Using-network banner fails",
+			logs:    nvlsLog,
+			variant: variantNET,
+			wantErr: true,
+		},
+		{
+			name:    "NVLS variant with comm-init + availability passes",
+			logs:    nvlsLog,
+			variant: variantNVLS,
+			wantErr: false,
+		},
+		{
+			name:    "NVLS variant when NCCL only sees NET fails (no availability banner)",
+			logs:    netLog,
+			variant: variantNVLS,
+			wantErr: true,
+		},
+		{
+			name:    "NVLS variant with availability but no comm init fails (detected, not used)",
+			logs:    nvlsAvailableOnlyLog,
+			variant: variantNVLS,
+			wantErr: true,
+		},
+		{
+			name:    "NVLS variant with silent logs fails",
+			logs:    silentLog,
+			variant: variantNVLS,
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := verifyTransportFromLogs(tt.logs, tt.variant)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("verifyTransportFromLogs() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestBuildComputeDomain(t *testing.T) {
+	const ns = "aicr-validation-test"
+	cd := buildComputeDomain(ns)
+
+	if got := cd.GetAPIVersion(); got != "resource.nvidia.com/v1beta1" {
+		t.Errorf("apiVersion = %q, want resource.nvidia.com/v1beta1", got)
+	}
+	if got := cd.GetKind(); got != "ComputeDomain" {
+		t.Errorf("kind = %q, want ComputeDomain", got)
+	}
+	if got := cd.GetName(); got != ncclComputeDomainName {
+		t.Errorf("name = %q, want %q", got, ncclComputeDomainName)
+	}
+	if got := cd.GetNamespace(); got != ns {
+		t.Errorf("namespace = %q, want %q", got, ns)
+	}
+
+	numNodes, found, err := unstructured.NestedInt64(cd.Object, "spec", "numNodes")
+	if err != nil || !found {
+		t.Fatalf("spec.numNodes lookup failed: err=%v found=%v", err, found)
+	}
+	if numNodes != 0 {
+		t.Errorf("numNodes = %d, want 0 (IMEXDaemonsWithDNSNames=true default)", numNodes)
+	}
+
+	mode, found, err := unstructured.NestedString(cd.Object, "spec", "channel", "allocationMode")
+	if err != nil || !found {
+		t.Fatalf("spec.channel.allocationMode lookup failed: err=%v found=%v", err, found)
+	}
+	if mode != "Single" {
+		t.Errorf("allocationMode = %q, want Single", mode)
+	}
+
+	rctName, found, err := unstructured.NestedString(cd.Object, "spec", "channel", "resourceClaimTemplate", "name")
+	if err != nil || !found {
+		t.Fatalf("spec.channel.resourceClaimTemplate.name lookup failed: err=%v found=%v", err, found)
+	}
+	if rctName != ncclIMEXClaimTemplateName {
+		t.Errorf("resourceClaimTemplate.name = %q, want %q", rctName, ncclIMEXClaimTemplateName)
+	}
+}
+
+func TestNVLSRuntimeYAMLReferencesIMEXClaim(t *testing.T) {
+	// The runtime-nvls template hardcodes the same RCT name the Go code
+	// creates via buildComputeDomain. If these drift, the DRA driver
+	// generates one name and the worker pods reference another, and
+	// pod admission fails with an opaque "claim not found" error.
+	data, err := os.ReadFile(filepath.Join("testdata", "gb200", "eks", "runtime-nvls.yaml"))
+	if err != nil {
+		t.Fatalf("failed to read runtime-nvls.yaml: %v", err)
+	}
+	s := string(data)
+	if !strings.Contains(s, "resourceClaimTemplateName: "+ncclIMEXClaimTemplateName) {
+		t.Errorf("runtime-nvls.yaml missing resourceClaimTemplateName: %s", ncclIMEXClaimTemplateName)
+	}
+	if !strings.Contains(s, "- name: imex-channel") {
+		t.Error("runtime-nvls.yaml missing 'name: imex-channel' in resourceClaims / claims blocks")
+	}
+}
+
+func TestSupportedNCCLCombinations_Variants(t *testing.T) {
+	if accels, ok := supportedNCCLCombinations[variantNET][recipe.CriteriaServiceEKS]; !ok {
+		t.Error("variantNET should support EKS")
+	} else if len(accels) != 1 || accels[0] != recipe.CriteriaAcceleratorGB200 {
+		t.Errorf("variantNET EKS accelerators = %v, want [GB200]", accels)
+	}
+	if accels, ok := supportedNCCLCombinations[variantNVLS][recipe.CriteriaServiceEKS]; !ok {
+		t.Error("variantNVLS should support EKS")
+	} else if len(accels) != 1 || accels[0] != recipe.CriteriaAcceleratorGB200 {
+		t.Errorf("variantNVLS EKS accelerators = %v, want [GB200]", accels)
+	}
+	// Legacy default variant must still list the original combinations
+	// so existing recipes that reference "nccl-all-reduce-bw" keep working.
+	if accels := supportedNCCLCombinations[variantDefault][recipe.CriteriaServiceEKS]; len(accels) != 1 || accels[0] != recipe.CriteriaAcceleratorH100 {
+		t.Errorf("variantDefault EKS = %v, want [H100]", accels)
+	}
+	if accels := supportedNCCLCombinations[variantDefault][recipe.CriteriaServiceAny]; len(accels) != 2 {
+		t.Errorf("variantDefault Any count = %d, want 2 (B200, GB200)", len(accels))
 	}
 }
 

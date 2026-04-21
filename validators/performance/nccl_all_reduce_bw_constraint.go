@@ -31,6 +31,7 @@ import (
 	"github.com/NVIDIA/aicr/validators"
 	"github.com/NVIDIA/aicr/validators/helper"
 	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -72,6 +73,41 @@ var (
 		Version:  "v1alpha1",
 		Resource: "trainingruntimes",
 	}
+
+	// computeDomainGVR is the NVIDIA DRA driver's ComputeDomain CR, used only
+	// by the NVLS variant to provision an IMEX domain across worker nodes.
+	// The CR causes the DRA driver to auto-generate a ResourceClaimTemplate
+	// (name matching channel.resourceClaimTemplate.name below) that worker
+	// pods reference via resourceClaims to get /dev/nvidia-caps-imex-channels
+	// mounted. Without this, MNNVL ("NVLS") fabric is detected but unusable.
+	computeDomainGVR = schema.GroupVersionResource{
+		Group:    "resource.nvidia.com",
+		Version:  "v1beta1",
+		Resource: "computedomains",
+	}
+
+	// resourceClaimTemplateGVR is the standard K8s DRA RCT, used to poll for
+	// the auto-generated template after ComputeDomain creation (race against
+	// the DRA controller reconciling the CR into an RCT).
+	resourceClaimTemplateGVR = schema.GroupVersionResource{
+		Group:    "resource.k8s.io",
+		Version:  "v1",
+		Resource: "resourceclaimtemplates",
+	}
+)
+
+const (
+	// ncclComputeDomainName names the ComputeDomain CR that the NVLS variant
+	// creates in the validation namespace. Single-purpose, short-lived,
+	// deleted in cleanupNCCLResources.
+	ncclComputeDomainName = "nccl-all-reduce-cd"
+
+	// ncclIMEXClaimTemplateName is both (a) the name the DRA driver gives the
+	// auto-generated ResourceClaimTemplate when reconciling
+	// ncclComputeDomainName and (b) the name runtime-nvls.yaml references
+	// from its resourceClaims[].resourceClaimTemplateName field. Must stay
+	// in sync with testdata/gb200/eks/runtime-nvls.yaml.
+	ncclIMEXClaimTemplateName = "nccl-all-reduce-imex"
 )
 
 // ncclBandwidthRe matches any data row in NCCL all-reduce output and captures the
@@ -79,27 +115,72 @@ var (
 // EKS max is 16G (17179869184), GKE max is 8G (8589934592) — this regex handles both.
 var ncclBandwidthRe = regexp.MustCompile(`\s+(\d+)\s+\d+\s+\w+\s+\w+\s+-?\d+\s+[\d.]+\s+[\d.]+\s+([\d.]+)`)
 
+// ncclVariant selects an NCCL transport-class template for the all-reduce check.
+// Variant names follow NCCL's own vocabulary: NET (network transport — EFA on EKS,
+// TCPXO on GKE, IB on-prem) and NVLS (NVLink SHARP / MNNVL). The zero value runs
+// the provider default template and asserts nothing about transport.
+type ncclVariant string
+
+const (
+	variantDefault ncclVariant = ""
+	variantNET     ncclVariant = "net"
+	variantNVLS    ncclVariant = "nvls"
+)
+
+// Transport markers emitted by NCCL when NCCL_DEBUG=INFO. Used by
+// verifyTransportFromLogs to assert the intended fabric actually carried
+// traffic. Earlier NCCL releases emitted per-channel "[send] via NET/<plugin>"
+// lines; from NCCL 2.27 onward the per-channel banner is gone and the
+// authoritative signals are the "Using network <plugin>" bootstrap selection
+// (NET) and the "NVLS comm 0x<addr>" communicator-init line (NVLS). NVLS
+// comm init is only logged when NCCL actually builds an NVLS communicator,
+// so matching it is proof of use rather than mere hardware availability.
+var (
+	ncclUsingNetRe      = regexp.MustCompile(`NCCL INFO Using network (\S+)`)
+	ncclNVLSCommInitRe  = regexp.MustCompile(`NVLS comm 0x[0-9a-fA-F]+`)
+	ncclNVLSAvailableRe = regexp.MustCompile(`NVLS multicast support is available`)
+)
+
 // templatePath returns the path to a testdata template file for the given
-// accelerator and service combination: testdata/{accelerator}/{service}/{filename}
-func templatePath(accelerator recipe.CriteriaAcceleratorType, service recipe.CriteriaServiceType, filename string) string {
+// accelerator, service, and variant:
+//
+//	variantDefault → testdata/{accelerator}/{service}/{filename}
+//	other variants → testdata/{accelerator}/{service}/{stem}-{variant}{ext}
+func templatePath(accelerator recipe.CriteriaAcceleratorType, service recipe.CriteriaServiceType, variant ncclVariant, filename string) string {
+	if variant != variantDefault {
+		ext := filepath.Ext(filename)
+		stem := strings.TrimSuffix(filename, ext)
+		filename = stem + "-" + string(variant) + ext
+	}
 	return filepath.Join("testdata", string(accelerator), string(service), filename)
 }
 
-// supportedNCCLCombinations maps each supported cloud service to the accelerator
-// types for which the automated NCCL all-reduce test has been implemented.
-// All platforms use Kubeflow TrainJob + MPI with per-platform TrainingRuntimes
-// and a shared TrainJob.
-var supportedNCCLCombinations = map[recipe.CriteriaServiceType][]recipe.CriteriaAcceleratorType{
-	recipe.CriteriaServiceEKS: {recipe.CriteriaAcceleratorH100},
-	recipe.CriteriaServiceGKE: {recipe.CriteriaAcceleratorH100},
-	recipe.CriteriaServiceAny: {recipe.CriteriaAcceleratorB200, recipe.CriteriaAcceleratorGB200},
+// supportedNCCLCombinations lists, per variant, which (service, accelerator)
+// tuples have a corresponding testdata template. All platforms use Kubeflow
+// TrainJob + MPI with per-platform TrainingRuntimes and a shared TrainJob.
+// variantDefault preserves the pre-variant behavior; named variants opt in
+// targeted transport-class coverage.
+var supportedNCCLCombinations = map[ncclVariant]map[recipe.CriteriaServiceType][]recipe.CriteriaAcceleratorType{
+	variantDefault: {
+		recipe.CriteriaServiceEKS: {recipe.CriteriaAcceleratorH100},
+		recipe.CriteriaServiceGKE: {recipe.CriteriaAcceleratorH100},
+		recipe.CriteriaServiceAny: {recipe.CriteriaAcceleratorB200, recipe.CriteriaAcceleratorGB200},
+	},
+	variantNET: {
+		recipe.CriteriaServiceEKS: {recipe.CriteriaAcceleratorGB200},
+	},
+	variantNVLS: {
+		recipe.CriteriaServiceEKS: {recipe.CriteriaAcceleratorGB200},
+	},
 }
 
 // validateNcclAllReduceBw validates NCCL All Reduce bandwidth using Kubeflow TrainJob + MPI.
 // Each platform has its own TrainingRuntime; the TrainJob is shared (just runtimeRef + numNodes).
+// The variant selects a transport-class template (NET, NVLS) when the recipe needs per-fabric
+// coverage on clusters that expose multiple inter-node fabrics (e.g. GB200/EKS).
 // Returns actual bandwidth value, whether it passed the threshold, and any error.
-func validateNcclAllReduceBw(ctx *validators.Context, constraint recipe.Constraint) (string, bool, error) {
-	slog.Info("Starting NCCL All Reduce bandwidth validation")
+func validateNcclAllReduceBw(ctx *validators.Context, constraint recipe.Constraint, variant ncclVariant) (string, bool, error) {
+	slog.Info("Starting NCCL All Reduce bandwidth validation", "variant", string(variant))
 
 	// Skip unless the recipe targets a supported service + accelerator combination.
 	if ctx.Recipe == nil || ctx.Recipe.Criteria == nil {
@@ -111,18 +192,20 @@ func validateNcclAllReduceBw(ctx *validators.Context, constraint recipe.Constrai
 	accelerator := ctx.Recipe.Criteria.Accelerator
 
 	supported := false
-	if supportedAccelerators, ok := supportedNCCLCombinations[service]; ok {
-		for _, a := range supportedAccelerators {
-			if accelerator == a {
-				supported = true
-				break
+	if byService, ok := supportedNCCLCombinations[variant]; ok {
+		if supportedAccelerators, ok := byService[service]; ok {
+			for _, a := range supportedAccelerators {
+				if accelerator == a {
+					supported = true
+					break
+				}
 			}
 		}
 	}
 
 	if !supported {
-		slog.Info("Skipping NCCL All Reduce bandwidth validation: unsupported service/accelerator combination",
-			"service", service, "accelerator", accelerator)
+		slog.Info("Skipping NCCL All Reduce bandwidth validation: unsupported variant/service/accelerator combination",
+			"variant", string(variant), "service", service, "accelerator", accelerator)
 		return "skipped - requires Service + Accelerator to be implemented", true, nil
 	}
 
@@ -151,7 +234,7 @@ func validateNcclAllReduceBw(ctx *validators.Context, constraint recipe.Constrai
 	// Run the NCCL all-reduce benchmark using Kubeflow TrainJob + MPI.
 	// Each platform has a per-platform TrainingRuntime with all platform-specific
 	// configuration (image, mpirun args, resources, sidecars). The TrainJob is shared.
-	logs, err := runNCCLTrainJob(ctx, gpuConfig, accelerator, service)
+	logs, err := runNCCLTrainJob(ctx, gpuConfig, accelerator, service, variant)
 	if err != nil {
 		return "", false, err
 	}
@@ -160,6 +243,14 @@ func validateNcclAllReduceBw(ctx *validators.Context, constraint recipe.Constrai
 	bandwidth, err := parseBandwidthFromLogs(logs)
 	if err != nil {
 		return logs, false, aicrErrors.Wrap(aicrErrors.ErrCodeInternal, "failed to parse bandwidth from logs", err)
+	}
+
+	// For named variants, assert the expected transport actually carried traffic.
+	// This turns the variant label into a hard guarantee — a GB200/EKS cluster
+	// with a broken IMEX domain will fail loudly on the NVLS variant instead of
+	// silently falling back to EFA.
+	if err := verifyTransportFromLogs(logs, variant); err != nil {
+		return logs, false, err
 	}
 
 	slog.Info("Measured bandwidth", "bandwidth", bandwidth)
@@ -181,7 +272,7 @@ func validateNcclAllReduceBw(ctx *validators.Context, constraint recipe.Constrai
 // It applies the per-platform TrainingRuntime and shared TrainJob, waits for the launcher
 // pod to complete, and returns the benchmark logs.
 func runNCCLTrainJob(ctx *validators.Context, gpuConfig *gpuConfiguration,
-	accelerator recipe.CriteriaAcceleratorType, service recipe.CriteriaServiceType) (string, error) {
+	accelerator recipe.CriteriaAcceleratorType, service recipe.CriteriaServiceType, variant ncclVariant) (string, error) {
 
 	dynamicClient := ctx.DynamicClient
 
@@ -205,7 +296,7 @@ func runNCCLTrainJob(ctx *validators.Context, gpuConfig *gpuConfiguration,
 	}
 
 	// Apply runtime and trainjob resources.
-	if applyErr := applyNCCLResources(ctx, dynamicClient, gpuConfig, accelerator, service); applyErr != nil {
+	if applyErr := applyNCCLResources(ctx, dynamicClient, gpuConfig, accelerator, service, variant); applyErr != nil {
 		return "", aicrErrors.Wrap(aicrErrors.ErrCodeInternal, "failed to apply NCCL resources", applyErr)
 	}
 	defer cleanupNCCLResources(dynamicClient, gpuConfig.Namespace)
@@ -295,10 +386,10 @@ func determineGPUConfig(ctx *validators.Context) (*gpuConfiguration, error) {
 
 // applyNCCLResources applies the per-platform TrainingRuntime and shared TrainJob
 // YAML files with template substitution using the dynamic client.
-// Runtime: testdata/{accelerator}/{service}/runtime.yaml (per-platform, contains all config)
+// Runtime: testdata/{accelerator}/{service}/runtime[-{variant}].yaml (per-platform+variant)
 // TrainJob: testdata/trainjob.yaml (shared, just runtimeRef + numNodes)
-func applyNCCLResources(ctx *validators.Context, dynamicClient dynamic.Interface, config *gpuConfiguration, accelerator recipe.CriteriaAcceleratorType, service recipe.CriteriaServiceType) error {
-	slog.Info("Applying NCCL test resources...", "accelerator", accelerator, "service", service)
+func applyNCCLResources(ctx *validators.Context, dynamicClient dynamic.Interface, config *gpuConfiguration, accelerator recipe.CriteriaAcceleratorType, service recipe.CriteriaServiceType, variant ncclVariant) error {
+	slog.Info("Applying NCCL test resources...", "accelerator", accelerator, "service", service, "variant", string(variant))
 
 	templateData := map[string]string{
 		"NAMESPACE":          config.Namespace,
@@ -368,7 +459,7 @@ func applyNCCLResources(ctx *validators.Context, dynamicClient dynamic.Interface
 				"(e.g., --node-selector nvidia.com/gpu.present=true)")
 	}
 
-	runtimeObj, err := parseYAMLTemplate(templatePath(accelerator, service, "runtime.yaml"), templateData)
+	runtimeObj, err := parseYAMLTemplate(templatePath(accelerator, service, variant, "runtime.yaml"), templateData)
 	if err != nil {
 		return aicrErrors.Wrap(aicrErrors.ErrCodeInternal, "failed to parse training runtime template", err)
 	}
@@ -387,6 +478,21 @@ func applyNCCLResources(ctx *validators.Context, dynamicClient dynamic.Interface
 		return aicrErrors.Wrap(aicrErrors.ErrCodeInternal, "TrainingRuntime not ready", err)
 	}
 
+	// NVLS variant only: provision an IMEX domain via the NVIDIA DRA driver
+	// before the TrainJob fires. The ComputeDomain CR causes the driver to
+	// auto-create a ResourceClaimTemplate that runtime-nvls.yaml references;
+	// without this, the NVL72 fabric is visible to NCCL but /dev/nvidia-caps-
+	// imex-channels isn't mounted into the workers and MNNVL aborts with
+	// "Cuda failure 800 'operation not permitted'".
+	if variant == variantNVLS {
+		if err := applyNCCLComputeDomain(ctx.Ctx, dynamicClient, config.Namespace); err != nil {
+			return aicrErrors.Wrap(aicrErrors.ErrCodeInternal, "failed to apply ComputeDomain", err)
+		}
+		if err := waitForIMEXClaimTemplate(ctx.Ctx, dynamicClient, config.Namespace); err != nil {
+			return aicrErrors.Wrap(aicrErrors.ErrCodeInternal, "IMEX ResourceClaimTemplate not ready", err)
+		}
+	}
+
 	// Apply shared trainjob: testdata/trainjob.yaml
 	trainjobPath := filepath.Join("testdata", "trainjob.yaml")
 	if err := applyYAMLWithDynamicClient(ctx.Ctx, dynamicClient, trainJobGVR, config.Namespace, trainjobPath, templateData); err != nil {
@@ -395,6 +501,69 @@ func applyNCCLResources(ctx *validators.Context, dynamicClient dynamic.Interface
 	slog.Info("Applied TrainJob")
 
 	return nil
+}
+
+// buildComputeDomain builds the resource.nvidia.com/v1beta1 ComputeDomain CR
+// that the NVLS variant applies. Extracted so tests can inspect the shape
+// without needing a dynamic client.
+//
+// Fields:
+//   - numNodes=0 because IMEXDaemonsWithDNSNames=true is the default in
+//     DRA driver v25.12.0; each IMEX daemon starts immediately rather than
+//     waiting for a quorum, and the validator's workers don't gate on it.
+//   - channel.allocationMode=Single (one IMEX channel per pod — plenty for
+//     a single TrainJob's rank/worker layout).
+//   - channel.resourceClaimTemplate.name is stable and matches what
+//     runtime-nvls.yaml expects to reference.
+func buildComputeDomain(namespace string) *unstructured.Unstructured {
+	return &unstructured.Unstructured{Object: map[string]interface{}{
+		"apiVersion": "resource.nvidia.com/v1beta1",
+		"kind":       "ComputeDomain",
+		"metadata": map[string]interface{}{
+			"name":      ncclComputeDomainName,
+			"namespace": namespace,
+		},
+		"spec": map[string]interface{}{
+			"numNodes": int64(0),
+			"channel": map[string]interface{}{
+				"allocationMode": "Single",
+				"resourceClaimTemplate": map[string]interface{}{
+					"name": ncclIMEXClaimTemplateName,
+				},
+			},
+		},
+	}}
+}
+
+// applyNCCLComputeDomain creates the ComputeDomain CR that backs the NVLS
+// variant's IMEX channel access. The DRA driver reconciles it into a
+// ResourceClaimTemplate with the same name as spec.channel.resourceClaimTemplate.name.
+func applyNCCLComputeDomain(ctx context.Context, dynamicClient dynamic.Interface, namespace string) error {
+	slog.Info("Applying ComputeDomain for NVLS/IMEX access", "namespace", namespace, "name", ncclComputeDomainName)
+	return createUnstructured(ctx, dynamicClient, computeDomainGVR, namespace, buildComputeDomain(namespace))
+}
+
+// waitForIMEXClaimTemplate polls until the DRA driver has reconciled the
+// ComputeDomain into a ResourceClaimTemplate. Applied TrainJob worker pods
+// reference this template by name; if it doesn't exist yet, kubelet rejects
+// the pods.
+func waitForIMEXClaimTemplate(ctx context.Context, dynamicClient dynamic.Interface, namespace string) error {
+	waitCtx, cancel := context.WithTimeout(ctx, defaults.DiagnosticTimeout)
+	defer cancel()
+
+	for {
+		_, err := dynamicClient.Resource(resourceClaimTemplateGVR).Namespace(namespace).Get(waitCtx, ncclIMEXClaimTemplateName, metav1.GetOptions{})
+		if err == nil {
+			slog.Info("IMEX ResourceClaimTemplate ready", "name", ncclIMEXClaimTemplateName)
+			return nil
+		}
+		select {
+		case <-waitCtx.Done():
+			return aicrErrors.Wrap(aicrErrors.ErrCodeTimeout,
+				"timed out waiting for DRA driver to reconcile ComputeDomain into a ResourceClaimTemplate", waitCtx.Err())
+		case <-time.After(defaults.TrainingRuntimePollInterval):
+		}
+	}
 }
 
 // applyYAMLWithDynamicClient reads a YAML template, performs substitution, and applies it using dynamic client
@@ -660,7 +829,63 @@ func parseBandwidthFromLogs(logs string) (float64, error) {
 	return bandwidth, nil
 }
 
-// cleanupNCCLResources removes the trainjob and runtime resources using dynamic client
+// verifyTransportFromLogs asserts that the fabric implied by the variant actually
+// carried NCCL traffic, based on the channel-assignment lines NCCL emits when
+// NCCL_DEBUG=INFO. Returns nil for variantDefault (no assertion, legacy behavior).
+//
+// Without this check, a misconfigured cluster would silently report a passing
+// bandwidth number from whatever transport NCCL happened to select.
+func verifyTransportFromLogs(logs string, variant ncclVariant) error {
+	switch variant {
+	case variantDefault:
+		return nil
+	case variantNET:
+		m := ncclUsingNetRe.FindStringSubmatch(logs)
+		if len(m) < 2 {
+			return aicrErrors.New(aicrErrors.ErrCodeInternal,
+				"NET variant selected but no 'NCCL INFO Using network <plugin>' banner found — "+
+					"the network transport plugin did not initialize (check NCCL_NET_PLUGIN and that the provider "+
+					"plugin .so is on LD_LIBRARY_PATH)")
+		}
+		// Anything other than Socket implies a real NET transport engaged
+		// (AWS Libfabric on EKS, IB/RoCE on-prem, TCPXO on GKE, etc.).
+		// Socket-only is the catch-all slow path and usually means the
+		// intended plugin failed to load — fail loudly so a misconfigured
+		// EFA stack doesn't silently report sub-NET-grade bandwidth.
+		if m[1] == "Socket" {
+			return aicrErrors.New(aicrErrors.ErrCodeInternal,
+				"NET variant selected but NCCL fell back to 'Using network Socket' — "+
+					"provider plugin (e.g. AWS Libfabric) did not load")
+		}
+		return nil
+	case variantNVLS:
+		if !ncclNVLSAvailableRe.MatchString(logs) {
+			return aicrErrors.New(aicrErrors.ErrCodeInternal,
+				"NVLS variant selected but 'NVLS multicast support is available' banner not found in NCCL logs — "+
+					"MNNVL did not initialize (check DRA IMEX channel claim and NCCL_NVLS_ENABLE=1)")
+		}
+		// NCCL 2.27+ no longer emits per-channel "via NVLS" lines. The
+		// authoritative post-init signal is the NVLS communicator log
+		// ("NVLS comm 0x<addr> headRank N nHeads M ...") which is only
+		// emitted when NCCL actually constructs an NVLS communicator for
+		// collective ops. If the availability banner appears but the comm
+		// init doesn't, NVLS was detected but not used — fail loudly.
+		if !ncclNVLSCommInitRe.MatchString(logs) {
+			return aicrErrors.New(aicrErrors.ErrCodeInternal,
+				"NVLS variant selected but no 'NVLS comm 0x<addr>' init line found in NCCL logs — "+
+					"NVLS was available but NCCL did not build an NVLS communicator (check for 'NVLS_NCHANNELS' > 0 and no NVLS-disabling env overrides)")
+		}
+		return nil
+	default:
+		return nil
+	}
+}
+
+// cleanupNCCLResources removes the trainjob, runtime, and (if present) the
+// ComputeDomain CR using the dynamic client. Deleting the ComputeDomain
+// cascades to its auto-generated ResourceClaimTemplate via the DRA driver;
+// NotFound on the ComputeDomain is expected for the default/NET variants
+// and is logged at debug rather than error.
 func cleanupNCCLResources(dynamicClient dynamic.Interface, namespace string) {
 	slog.Info("Cleaning up NCCL test resources...")
 
@@ -681,5 +906,18 @@ func cleanupNCCLResources(dynamicClient dynamic.Interface, namespace string) {
 		slog.Error("Warning: Failed to delete TrainingRuntime", "error", err)
 	} else {
 		slog.Info("Deleted TrainingRuntime")
+	}
+
+	// Delete ComputeDomain if this was the NVLS variant. NotFound is the
+	// expected path for default/NET and is ignored here; other errors bubble
+	// up as a warning because the RCT and IMEX daemons otherwise leak.
+	err = dynamicClient.Resource(computeDomainGVR).Namespace(namespace).Delete(cleanupCtx, ncclComputeDomainName, metav1.DeleteOptions{})
+	switch {
+	case err == nil:
+		slog.Info("Deleted ComputeDomain")
+	case apierrors.IsNotFound(err):
+		slog.Debug("ComputeDomain not present (non-NVLS variant), skipping", "name", ncclComputeDomainName)
+	default:
+		slog.Error("Warning: Failed to delete ComputeDomain", "error", err, "name", ncclComputeDomainName)
 	}
 }
