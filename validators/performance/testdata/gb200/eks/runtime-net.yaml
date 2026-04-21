@@ -15,9 +15,10 @@
 # NCCL all-reduce TrainingRuntime for GB200 on EKS, NET-transport variant.
 #
 # Forces NCCL to route traffic over the network transport (AWS EFA via the
-# aws-ofi-nccl plugin) instead of MNNVL. NVLS is explicitly disabled via
-# NCCL_NVLS_ENABLE=0 so operators validating a p6e-gb200.36xlarge cluster
-# can measure the EFA fabric independently of the NVL72 NVLink domain.
+# aws-ofi-nccl plugin) instead of any NVLink path. Both NVLS (NVLink SHARP)
+# and MNNVL (multi-node NVLink via IMEX) are explicitly disabled so operators
+# validating a p6e-gb200.36xlarge cluster can measure the EFA fabric
+# independently of the NVL72 NVLink domain.
 #
 # NCCL_DEBUG=INFO emits the transport banner lines that
 # validators/performance/nccl_all_reduce_bw_constraint.go:verifyTransportFromLogs
@@ -107,9 +108,16 @@ spec:
                   # banners appear in launcher logs for verifyTransportFromLogs.
                   - -x
                   - NCCL_DEBUG=INFO
-                  # Force NCCL onto the NET transport (EFA): disable NVLink SHARP.
+                  # Force NCCL onto the NET transport (EFA). Disable every NVLink
+                  # path NCCL would otherwise try: NVLS (NVLink SHARP) and MNNVL
+                  # (multi-node NVLink via IMEX). On GB200 the MNNVL probe succeeds
+                  # on cliqueSize=8 but the NET pods have no IMEX channel device
+                  # attached, so MNNVL init aborts with "Cuda failure 800 operation
+                  # not permitted" and the NCCL test exits before any NET traffic.
                   - -x
                   - NCCL_NVLS_ENABLE=0
+                  - -x
+                  - NCCL_MNNVL_ENABLE=0
                   - -x
                   - FI_PROVIDER=efa
                   - -x
