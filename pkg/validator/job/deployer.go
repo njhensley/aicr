@@ -190,6 +190,11 @@ func (d *Deployer) buildApplyConfig() *applybatchv1.JobApplyConfiguration {
 
 func (d *Deployer) buildEnvApply() []*applycorev1.EnvVarApplyConfiguration {
 	orchestratorEnvCount := 8
+	// Same fallback rule as buildApplyConfig — catalog timeout (0 means unset).
+	timeout := d.entry.Timeout
+	if timeout == 0 {
+		timeout = defaults.ValidatorDefaultTimeout
+	}
 	env := make([]*applycorev1.EnvVarApplyConfiguration, 0, orchestratorEnvCount+len(d.entry.Env))
 	env = append(env,
 		applycorev1.EnvVar().WithName("AICR_SNAPSHOT_PATH").WithValue("/data/snapshot/snapshot.yaml"),
@@ -200,6 +205,11 @@ func (d *Deployer) buildEnvApply() []*applycorev1.EnvVarApplyConfiguration {
 		applycorev1.EnvVar().WithName("AICR_NAMESPACE").
 			WithValueFrom(applycorev1.EnvVarSource().
 				WithFieldRef(applycorev1.ObjectFieldSelector().WithFieldPath("metadata.namespace"))),
+		// Propagate the catalog entry's timeout into the validator's
+		// LoadContext() parent ctx. Without this, the validator uses the
+		// package default regardless of the catalog value, which cuts off
+		// any check whose real runtime exceeds that default.
+		applycorev1.EnvVar().WithName("AICR_CHECK_TIMEOUT").WithValue(timeout.String()),
 	)
 	// Pass scheduling overrides to the validator container so it can apply them
 	// to the inner workloads it creates (e.g., NCCL benchmark pods). These env

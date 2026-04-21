@@ -70,13 +70,29 @@ type Context struct {
 	Tolerations []corev1.Toleration
 }
 
+// checkTimeoutFromEnv honors AICR_CHECK_TIMEOUT (a Go duration string) set
+// by the validator Job deployer from the catalog entry's timeout field.
+// Falls back to defaults.CheckExecutionTimeout when unset or malformed.
+// Deployer-side propagation lives in pkg/validator/job/deployer.go.
+func checkTimeoutFromEnv() time.Duration {
+	raw := os.Getenv("AICR_CHECK_TIMEOUT")
+	if raw == "" {
+		return defaults.CheckExecutionTimeout
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return defaults.CheckExecutionTimeout
+	}
+	return d
+}
+
 // LoadContext creates a Context from the v2 container environment.
 // Reads snapshot and recipe from mounted ConfigMap paths.
 // Builds a K8s client from in-cluster config or KUBECONFIG.
 //
 // The caller MUST call ctx.Cancel() when done.
 func LoadContext() (*Context, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), defaults.CheckExecutionTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), checkTimeoutFromEnv())
 
 	// Build K8s client
 	clientset, config, err := k8sclient.BuildKubeClient("")
