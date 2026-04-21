@@ -27,6 +27,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 
+	"github.com/NVIDIA/aicr/pkg/defaults"
 	aicrErrors "github.com/NVIDIA/aicr/pkg/errors"
 	k8spod "github.com/NVIDIA/aicr/pkg/k8s/pod"
 	"github.com/NVIDIA/aicr/pkg/recipe"
@@ -49,11 +50,6 @@ func parseNVregFromParams(content string) bool {
 }
 
 const (
-	// preflightImage is the tiny image that runs the grep check. busybox is
-	// multi-arch (amd64 + arm64) and already widely pullable; picking the
-	// same image main uses in similar preflight paths keeps it predictable.
-	preflightImage = "busybox:1.37"
-
 	// preflightPodTimeout bounds how long we wait for the check pod to
 	// schedule, run, and terminate. The actual work is one grep.
 	preflightPodTimeout = 2 * time.Minute
@@ -146,7 +142,7 @@ func checkNVregOnNode(ctx *validators.Context, nodeName string) (bool, error) {
 			Tolerations: []corev1.Toleration{{Operator: corev1.TolerationOpExists}},
 			Containers: []corev1.Container{{
 				Name:    "probe",
-				Image:   preflightImage,
+				Image:   defaults.ProbeImage,
 				Command: []string{"/bin/sh", "-c"},
 				// grep -q is silent; the exit code carries the signal. Use a
 				// plain grep fallback (no -q) to emit the matching line to
