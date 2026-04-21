@@ -231,6 +231,16 @@ func validateNcclAllReduceBw(ctx *validators.Context, constraint recipe.Constrai
 		return "skipped - requires at least 2 GPU nodes for EW fabric test", true, nil
 	}
 
+	// Preflight cluster-side prerequisites before spending TrainJob time.
+	// On GB200/EKS the NET variant needs NVreg_GrdmaPciTopoCheckOverride=1
+	// on the NVIDIA driver; without it, EFA can't attach dma-buf to GPU HBM
+	// and NCCL silently falls back to Socket.
+	if gb200NetPreflightApplies(variant, accelerator, service) {
+		if pfErr := preflightGB200NetNVregFlag(ctx, gpuConfig.Nodes); pfErr != nil {
+			return "", false, pfErr
+		}
+	}
+
 	// Run the NCCL all-reduce benchmark using Kubeflow TrainJob + MPI.
 	// Each platform has a per-platform TrainingRuntime with all platform-specific
 	// configuration (image, mpirun args, resources, sidecars). The TrainJob is shared.
