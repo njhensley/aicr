@@ -36,6 +36,13 @@ spec:
     # GB200-specific GPU Operator overrides (inherits valuesFile from eks-training)
     - name: gpu-operator
       type: Helm
+      manifestFiles:
+        # Ships a ConfigMap with options nvidia NVreg_GrdmaPciTopoCheckOverride=1.
+        # driver.kernelModuleConfig.name (below) points the ClusterPolicy at it,
+        # so the driver DaemonSet mounts nvidia.conf and the kernel loads with
+        # the flag set — required on GB200+EFA for EFA dma-buf attach to the
+        # Grace PCI topology. Without it, NCCL silently falls back to Socket.
+        - components/gpu-operator/manifests/kernel-module-params.yaml
       dependencyRefs:
         - nfd
         - cert-manager
@@ -46,6 +53,9 @@ spec:
           enabled: true
         gdrcopy:
           enabled: true
+        driver:
+          kernelModuleConfig:
+            name: nvidia-kernel-module-params
 
     # GB200 uses nodewright no-op: the H100 tuning packages (nvidia-setup,
     # nvidia-tuned) are not compatible with GB200's ARM64 host CPU and
