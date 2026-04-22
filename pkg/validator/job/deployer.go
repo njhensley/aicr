@@ -207,7 +207,7 @@ func (d *Deployer) buildEnvApply() []*applycorev1.EnvVarApplyConfiguration {
 		applycorev1.EnvVar().WithName("AICR_NAMESPACE").
 			WithValueFrom(applycorev1.EnvVarSource().
 				WithFieldRef(applycorev1.ObjectFieldSelector().WithFieldPath("metadata.namespace"))),
-		applycorev1.EnvVar().WithName(defaults.EnvCheckTimeout).WithValue(timeout.String()),
+		applycorev1.EnvVar().WithName("AICR_CHECK_TIMEOUT").WithValue(timeout.String()),
 	)
 	// Pass scheduling overrides to the validator container so it can apply them
 	// to the inner workloads it creates (e.g., NCCL benchmark pods). These env

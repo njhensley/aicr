@@ -18,8 +18,4 @@ const (
 	// ProbeImage is the multi-arch (amd64+arm64) toolbox used by validator
 	// probe Pods. busybox provides /bin/sh, grep, ls, sleep in ~2 MB.
 	ProbeImage = "busybox:1.37"
-
-	// EnvCheckTimeout carries the catalog entry's per-check timeout from
-	// the validator Job deployer to the in-container LoadContext().
-	EnvCheckTimeout = "AICR_CHECK_TIMEOUT"
 )
