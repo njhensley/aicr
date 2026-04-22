@@ -35,7 +35,7 @@ jobs:
       GCP_REGION: "us-central1"
       GCP_WIF_PROVIDER: "projects/116689922666/locations/global/workloadIdentityPools/github-actions-pool/providers/github-actions-provider"
       GCP_WIF_SERVICE_ACCOUNT: "github-actions@eidosx.iam.gserviceaccount.com"
-      DEPLOYMENT_ID: "aicr-uat-${{ github.run_id }}"
+      DEPLOYMENT_ID: "aicr-${{ github.run_id }}"
       CLUSTER_CONFIG: tests/uat/gcp/config.yaml
       GKE_ACTUATOR_IMAGE: "ghcr.io/mchmarny/cluster/gke:latest"
       VALIDATOR_IMAGE_PREFIX: "ghcr.io/nvidia/aicr-validators"
