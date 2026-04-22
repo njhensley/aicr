@@ -14,20 +14,12 @@
 
 package defaults
 
-// Container images used by AICR validators for short-lived probe Pods
-// (per-node host-state checks, DRA isolation smoke tests, autoscaling
-// triggers, NCCL preflights, etc). Centralized so bumping a pin is a
-// one-file change and every probe-style validator reuses a single,
-// auditable image reference.
-//
-// Not load-time overridable: callers that need runtime override (airgapped
-// registries, fork-specific pins) should read an environment variable at
-// the call site and fall back to this value — the same pattern
-// pkg/validator/catalog uses for AICR_VALIDATOR_IMAGE_REGISTRY.
 const (
-	// ProbeImage is the lightweight multi-arch Linux toolbox used by
-	// validator probe Pods. Must be publicly pullable, support linux/amd64
-	// and linux/arm64, and provide the standard UNIX utilities (/bin/sh,
-	// grep, ls, sleep). busybox satisfies all of these in ~2 MB.
+	// ProbeImage is the multi-arch (amd64+arm64) toolbox used by validator
+	// probe Pods. busybox provides /bin/sh, grep, ls, sleep in ~2 MB.
 	ProbeImage = "busybox:1.37"
+
+	// EnvCheckTimeout carries the catalog entry's per-check timeout from
+	// the validator Job deployer to the in-container LoadContext().
+	EnvCheckTimeout = "AICR_CHECK_TIMEOUT"
 )

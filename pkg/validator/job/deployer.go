@@ -127,11 +127,17 @@ func (d *Deployer) CleanupJob(ctx context.Context) error {
 	return k8s.IgnoreNotFound(err)
 }
 
-func (d *Deployer) buildApplyConfig() *applybatchv1.JobApplyConfiguration {
-	timeout := d.entry.Timeout
-	if timeout == 0 {
-		timeout = defaults.ValidatorDefaultTimeout
+// resolvedTimeout returns the catalog entry's timeout, falling back to the
+// package default when unset (catalog Timeout == 0).
+func (d *Deployer) resolvedTimeout() time.Duration {
+	if d.entry.Timeout == 0 {
+		return defaults.ValidatorDefaultTimeout
 	}
+	return d.entry.Timeout
+}
+
+func (d *Deployer) buildApplyConfig() *applybatchv1.JobApplyConfiguration {
+	timeout := d.resolvedTimeout()
 
 	return applybatchv1.Job(d.jobName, d.namespace).
 		WithLabels(map[string]string{
@@ -190,11 +196,7 @@ func (d *Deployer) buildApplyConfig() *applybatchv1.JobApplyConfiguration {
 
 func (d *Deployer) buildEnvApply() []*applycorev1.EnvVarApplyConfiguration {
 	orchestratorEnvCount := 8
-	// Same fallback rule as buildApplyConfig — catalog timeout (0 means unset).
-	timeout := d.entry.Timeout
-	if timeout == 0 {
-		timeout = defaults.ValidatorDefaultTimeout
-	}
+	timeout := d.resolvedTimeout()
 	env := make([]*applycorev1.EnvVarApplyConfiguration, 0, orchestratorEnvCount+len(d.entry.Env))
 	env = append(env,
 		applycorev1.EnvVar().WithName("AICR_SNAPSHOT_PATH").WithValue("/data/snapshot/snapshot.yaml"),
@@ -205,11 +207,7 @@ func (d *Deployer) buildEnvApply() []*applycorev1.EnvVarApplyConfiguration {
 		applycorev1.EnvVar().WithName("AICR_NAMESPACE").
 			WithValueFrom(applycorev1.EnvVarSource().
 				WithFieldRef(applycorev1.ObjectFieldSelector().WithFieldPath("metadata.namespace"))),
-		// Propagate the catalog entry's timeout into the validator's
-		// LoadContext() parent ctx. Without this, the validator uses the
-		// package default regardless of the catalog value, which cuts off
-		// any check whose real runtime exceeds that default.
-		applycorev1.EnvVar().WithName("AICR_CHECK_TIMEOUT").WithValue(timeout.String()),
+		applycorev1.EnvVar().WithName(defaults.EnvCheckTimeout).WithValue(timeout.String()),
 	)
 	// Pass scheduling overrides to the validator container so it can apply them
 	// to the inner workloads it creates (e.g., NCCL benchmark pods). These env

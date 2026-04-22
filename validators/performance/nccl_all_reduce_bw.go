@@ -48,13 +48,15 @@ func checkNCCLAllReduceBWNVLS(ctx *validators.Context) error {
 // recipes/validators/catalog.yaml.
 func constraintNameForVariant(variant ncclVariant) string {
 	switch variant {
-	case variantDefault:
-		return "nccl-all-reduce-bw"
 	case variantNET:
 		return "nccl-all-reduce-bw-net"
 	case variantNVLS:
 		return "nccl-all-reduce-bw-nvls"
+	case variantDefault:
+		return "nccl-all-reduce-bw"
 	default:
+		// Unknown values fall back to the legacy constraint name so existing
+		// recipes keep validating after variant rollout.
 		return "nccl-all-reduce-bw"
 	}
 }

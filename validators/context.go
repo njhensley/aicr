@@ -70,12 +70,11 @@ type Context struct {
 	Tolerations []corev1.Toleration
 }
 
-// checkTimeoutFromEnv honors AICR_CHECK_TIMEOUT (a Go duration string) set
-// by the validator Job deployer from the catalog entry's timeout field.
+// checkTimeoutFromEnv honors defaults.EnvCheckTimeout (a Go duration string)
+// set by the validator Job deployer from the catalog entry's timeout field.
 // Falls back to defaults.CheckExecutionTimeout when unset or malformed.
-// Deployer-side propagation lives in pkg/validator/job/deployer.go.
 func checkTimeoutFromEnv() time.Duration {
-	raw := os.Getenv("AICR_CHECK_TIMEOUT")
+	raw := os.Getenv(defaults.EnvCheckTimeout)
 	if raw == "" {
 		return defaults.CheckExecutionTimeout
 	}

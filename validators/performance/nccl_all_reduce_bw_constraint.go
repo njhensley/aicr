@@ -35,6 +35,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/yaml"
@@ -97,16 +98,11 @@ var (
 )
 
 const (
-	// ncclComputeDomainName names the ComputeDomain CR that the NVLS variant
-	// creates in the validation namespace. Single-purpose, short-lived,
-	// deleted in cleanupNCCLResources.
 	ncclComputeDomainName = "nccl-all-reduce-cd"
 
-	// ncclIMEXClaimTemplateName is both (a) the name the DRA driver gives the
-	// auto-generated ResourceClaimTemplate when reconciling
-	// ncclComputeDomainName and (b) the name runtime-nvls.yaml references
-	// from its resourceClaims[].resourceClaimTemplateName field. Must stay
-	// in sync with testdata/gb200/eks/runtime-nvls.yaml.
+	// ncclIMEXClaimTemplateName must match the resourceClaimTemplateName
+	// field in testdata/gb200/eks/runtime-nvls.yaml — the DRA driver uses
+	// this name when auto-generating the RCT from the ComputeDomain CR.
 	ncclIMEXClaimTemplateName = "nccl-all-reduce-imex"
 )
 
@@ -553,25 +549,49 @@ func applyNCCLComputeDomain(ctx context.Context, dynamicClient dynamic.Interface
 	return createUnstructured(ctx, dynamicClient, computeDomainGVR, namespace, buildComputeDomain(namespace))
 }
 
-// waitForIMEXClaimTemplate polls until the DRA driver has reconciled the
+// waitForIMEXClaimTemplate waits until the DRA driver has reconciled the
 // ComputeDomain into a ResourceClaimTemplate. Applied TrainJob worker pods
 // reference this template by name; if it doesn't exist yet, kubelet rejects
-// the pods.
+// the pods. Uses the watch API per CLAUDE.md "Kubernetes Patterns".
 func waitForIMEXClaimTemplate(ctx context.Context, dynamicClient dynamic.Interface, namespace string) error {
 	waitCtx, cancel := context.WithTimeout(ctx, defaults.DiagnosticTimeout)
 	defer cancel()
 
+	rctClient := dynamicClient.Resource(resourceClaimTemplateGVR).Namespace(namespace)
+
+	// Fast path: the DRA controller may have reconciled the RCT before we
+	// reach this wait (common on re-runs, warm clusters).
+	if _, err := rctClient.Get(waitCtx, ncclIMEXClaimTemplateName, metav1.GetOptions{}); err == nil {
+		slog.Info("IMEX ResourceClaimTemplate ready", "name", ncclIMEXClaimTemplateName)
+		return nil
+	} else if !apierrors.IsNotFound(err) {
+		return aicrErrors.Wrap(aicrErrors.ErrCodeInternal,
+			"failed to get IMEX ResourceClaimTemplate", err)
+	}
+
+	watcher, err := rctClient.Watch(waitCtx, metav1.ListOptions{
+		FieldSelector: "metadata.name=" + ncclIMEXClaimTemplateName,
+	})
+	if err != nil {
+		return aicrErrors.Wrap(aicrErrors.ErrCodeInternal,
+			"failed to watch IMEX ResourceClaimTemplate", err)
+	}
+	defer watcher.Stop()
+
 	for {
-		_, err := dynamicClient.Resource(resourceClaimTemplateGVR).Namespace(namespace).Get(waitCtx, ncclIMEXClaimTemplateName, metav1.GetOptions{})
-		if err == nil {
-			slog.Info("IMEX ResourceClaimTemplate ready", "name", ncclIMEXClaimTemplateName)
-			return nil
-		}
 		select {
 		case <-waitCtx.Done():
 			return aicrErrors.Wrap(aicrErrors.ErrCodeTimeout,
 				"timed out waiting for DRA driver to reconcile ComputeDomain into a ResourceClaimTemplate", waitCtx.Err())
-		case <-time.After(defaults.TrainingRuntimePollInterval):
+		case event, ok := <-watcher.ResultChan():
+			if !ok {
+				return aicrErrors.New(aicrErrors.ErrCodeInternal,
+					"IMEX ResourceClaimTemplate watch channel closed unexpectedly")
+			}
+			if event.Type == watch.Added || event.Type == watch.Modified {
+				slog.Info("IMEX ResourceClaimTemplate ready", "name", ncclIMEXClaimTemplateName)
+				return nil
+			}
 		}
 	}
 }

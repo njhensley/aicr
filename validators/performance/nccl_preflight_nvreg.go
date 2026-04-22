@@ -19,13 +19,17 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"slices"
 	"strings"
+	"sync"
 	"time"
 
+	"golang.org/x/sync/errgroup"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/apimachinery/pkg/watch"
+	"k8s.io/client-go/kubernetes"
 
 	"github.com/NVIDIA/aicr/pkg/defaults"
 	aicrErrors "github.com/NVIDIA/aicr/pkg/errors"
@@ -34,13 +38,14 @@ import (
 	"github.com/NVIDIA/aicr/validators"
 )
 
-// grdmaPciTopoCheckOverrideRe matches the runtime-parameter line the NVIDIA
-// kernel module writes to /proc/driver/nvidia/params when
-// NVreg_GrdmaPciTopoCheckOverride=1 is set on driver load. Anchored to a
-// full line so a commented-out default like "# GrdmaPciTopoCheckOverride: 0"
-// would not match. Shared between the per-node probe Pod's grep argument
-// (as a plain string) and parseNVregFromParams() for unit testing.
-var grdmaPciTopoCheckOverrideRe = regexp.MustCompile(`(?m)^GrdmaPciTopoCheckOverride: 1$`)
+// grdmaPciTopoCheckOverridePattern is the full-line pattern matched both by
+// the in-pod grep argument and by parseNVregFromParams(). Centralized so the
+// two sites cannot drift.
+const grdmaPciTopoCheckOverridePattern = `^GrdmaPciTopoCheckOverride: 1$`
+
+// grdmaPciTopoCheckOverrideRe wraps the pattern with multiline anchoring for
+// the pure-function parser; grep handles multiline matching natively.
+var grdmaPciTopoCheckOverrideRe = regexp.MustCompile(`(?m)` + grdmaPciTopoCheckOverridePattern)
 
 // parseNVregFromParams reports whether /proc/driver/nvidia/params content has
 // NVreg_GrdmaPciTopoCheckOverride set to 1. Pure function for unit testing;
@@ -50,9 +55,16 @@ func parseNVregFromParams(content string) bool {
 }
 
 const (
-	// preflightPodTimeout bounds how long we wait for the check pod to
-	// schedule, run, and terminate. The actual work is one grep.
-	preflightPodTimeout = 2 * time.Minute
+	// preflightNodeConcurrency caps the number of in-flight per-node probe
+	// Pods. Large enough to keep wall-clock low on the typical (<=64 node)
+	// GB200 cluster while bounding apiserver and scheduler pressure on
+	// larger clusters.
+	preflightNodeConcurrency = 16
+
+	// preflightCleanupTimeout bounds the best-effort probe-pod delete in
+	// the deferred cleanup path, which runs with context.Background() so it
+	// still fires after the parent context has been canceled.
+	preflightCleanupTimeout = 30 * time.Second
 
 	// preflightPodNamePrefix is the generateName seed for the per-node probe
 	// pods. Short so the full name (including node hash + rand suffix) fits
@@ -93,20 +105,35 @@ func preflightGB200NetNVregFlag(ctx *validators.Context, nodes []corev1.Node) er
 	slog.Info("NET preflight: checking NVreg_GrdmaPciTopoCheckOverride on GPU nodes",
 		"nodes", len(nodes))
 
-	var missing []string
+	var (
+		mu      sync.Mutex
+		missing []string
+	)
+	g, gctx := errgroup.WithContext(ctx.Ctx)
+	g.SetLimit(preflightNodeConcurrency)
 	for _, n := range nodes {
-		ok, err := checkNVregOnNode(ctx, n.Name)
-		if err != nil {
-			return aicrErrors.WrapWithContext(aicrErrors.ErrCodeInternal,
-				"NVreg preflight probe failed", err,
-				map[string]interface{}{"node": n.Name})
-		}
-		if !ok {
-			missing = append(missing, n.Name)
-		}
+		nodeName := n.Name
+		g.Go(func() error {
+			ok, err := checkNVregOnNode(gctx, ctx.Clientset, ctx.Namespace, nodeName)
+			if err != nil {
+				return aicrErrors.WrapWithContext(aicrErrors.ErrCodeInternal,
+					"NVreg preflight probe failed", err,
+					map[string]interface{}{"node": nodeName})
+			}
+			if !ok {
+				mu.Lock()
+				missing = append(missing, nodeName)
+				mu.Unlock()
+			}
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return err
 	}
 
 	if len(missing) > 0 {
+		slices.Sort(missing)
 		return aicrErrors.New(aicrErrors.ErrCodeInvalidRequest,
 			fmt.Sprintf("NVreg_GrdmaPciTopoCheckOverride=1 missing on GPU nodes: %s. %s",
 				strings.Join(missing, ", "), nvregDocsHint))
@@ -121,13 +148,13 @@ func preflightGB200NetNVregFlag(ctx *validators.Context, nodes []corev1.Node) er
 // /proc/driver/nvidia/params on a specific node. Returns (true, nil) if the
 // flag is set, (false, nil) if the flag is absent or zero, or (_, err) on
 // any other failure (pod schedule, image pull, log read).
-func checkNVregOnNode(ctx *validators.Context, nodeName string) (bool, error) {
-	podsClient := ctx.Clientset.CoreV1().Pods(ctx.Namespace)
+func checkNVregOnNode(ctx context.Context, clientset kubernetes.Interface, namespace, nodeName string) (bool, error) {
+	podsClient := clientset.CoreV1().Pods(namespace)
 
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: preflightPodNamePrefix,
-			Namespace:    ctx.Namespace,
+			Namespace:    namespace,
 			Labels: map[string]string{
 				"app.kubernetes.io/component":  "nccl-nvreg-preflight",
 				"app.kubernetes.io/managed-by": "aicr-validator",
@@ -144,12 +171,8 @@ func checkNVregOnNode(ctx *validators.Context, nodeName string) (bool, error) {
 				Name:    "probe",
 				Image:   defaults.ProbeImage,
 				Command: []string{"/bin/sh", "-c"},
-				// grep -q is silent; the exit code carries the signal. Use a
-				// plain grep fallback (no -q) to emit the matching line to
-				// stdout when present — useful when an operator runs the
-				// validator with --verbose and wants confirmation.
 				Args: []string{
-					"grep '^GrdmaPciTopoCheckOverride: 1$' /host-proc-nvidia/params",
+					"grep '" + grdmaPciTopoCheckOverridePattern + "' /host-proc-nvidia/params",
 				},
 				VolumeMounts: []corev1.VolumeMount{{
 					Name:      "proc-nvidia",
@@ -168,57 +191,94 @@ func checkNVregOnNode(ctx *validators.Context, nodeName string) (bool, error) {
 		},
 	}
 
-	created, err := podsClient.Create(ctx.Ctx, pod, metav1.CreateOptions{})
+	created, err := podsClient.Create(ctx, pod, metav1.CreateOptions{})
 	if err != nil {
 		return false, aicrErrors.Wrap(aicrErrors.ErrCodeInternal,
 			"failed to create NVreg preflight pod", err)
 	}
-	// Cleanup at function exit. Non-fatal if it races with test teardown.
-	defer func() {
-		if delErr := podsClient.Delete(ctx.Ctx, created.Name, metav1.DeleteOptions{}); delErr != nil && !apierrors.IsNotFound(delErr) {
+	// Cleanup runs on an independent context so it fires even when the
+	// probe context has been canceled (timeout, parallel-sibling error).
+	defer func() { //nolint:contextcheck // Fresh context: parent may be canceled during cleanup
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), preflightCleanupTimeout)
+		defer cancel()
+		if delErr := podsClient.Delete(cleanupCtx, created.Name, metav1.DeleteOptions{}); delErr != nil && !apierrors.IsNotFound(delErr) {
 			slog.Warn("failed to delete NVreg preflight pod", "pod", created.Name, "err", delErr)
 		}
 	}()
 
-	var finalPhase corev1.PodPhase
-	err = wait.PollUntilContextTimeout(ctx.Ctx, 2*time.Second, preflightPodTimeout, true,
-		func(pctx context.Context) (bool, error) {
-			p, getErr := podsClient.Get(pctx, created.Name, metav1.GetOptions{})
-			if getErr != nil {
-				return false, getErr
-			}
-			finalPhase = p.Status.Phase
-			return finalPhase == corev1.PodSucceeded || finalPhase == corev1.PodFailed, nil
-		})
+	phase, err := waitForPreflightPodPhase(ctx, clientset, namespace, created.Name, defaults.DiagnosticTimeout)
 	if err != nil {
-		return false, aicrErrors.WrapWithContext(aicrErrors.ErrCodeTimeout,
-			"NVreg preflight pod did not terminate in time", err,
-			map[string]interface{}{"pod": created.Name, "phase": string(finalPhase)})
+		return false, err
 	}
 
-	// Succeeded = grep matched = flag is set.
-	if finalPhase == corev1.PodSucceeded {
+	if phase == corev1.PodSucceeded {
 		return true, nil
 	}
 
-	// Failed: distinguish flag-absent (grep exit 1) from harder errors by
-	// fetching logs. Empty logs on Failed phase typically indicate the pod
-	// never reached the grep — e.g. image pull failure or hostPath denied.
-	logs, logErr := k8spod.GetPodLogs(ctx.Ctx, ctx.Clientset, ctx.Namespace, created.Name, "probe")
+	// Failed: distinguish flag-absent (grep exit 1, empty stdout) from
+	// harder errors (image pull, hostPath denied) by inspecting logs.
+	logs, logErr := k8spod.GetPodLogs(ctx, clientset, namespace, created.Name, "probe")
 	if logErr != nil {
 		return false, aicrErrors.Wrap(aicrErrors.ErrCodeInternal,
 			"NVreg preflight pod Failed and logs were unreadable", logErr)
 	}
-	// grep with no match exits 1 and produces no output — the normal "flag
-	// missing" path. Any stdout content means grep ran but matched nothing;
-	// any non-empty stderr content would typically be e.g. "No such file or
-	// directory" which means /proc/driver/nvidia was not populated (kernel
-	// module not loaded at all — far more serious than a missing flag).
 	if strings.TrimSpace(logs) != "" {
 		slog.Warn("NVreg preflight pod emitted unexpected output",
 			"node", nodeName, "output", strings.TrimSpace(logs))
 	}
 	return false, nil
+}
+
+// waitForPreflightPodPhase watches a pod until it reaches a terminal phase
+// (Succeeded or Failed). Uses the watch API per CLAUDE.md "Kubernetes
+// Patterns" rather than polling. Returns the terminal phase on success.
+func waitForPreflightPodPhase(ctx context.Context, clientset kubernetes.Interface, namespace, name string, timeout time.Duration) (corev1.PodPhase, error) {
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	podsClient := clientset.CoreV1().Pods(namespace)
+
+	// Fast path: pod may already be terminal.
+	if current, err := podsClient.Get(waitCtx, name, metav1.GetOptions{}); err == nil {
+		if p := current.Status.Phase; p == corev1.PodSucceeded || p == corev1.PodFailed {
+			return p, nil
+		}
+	} else if !apierrors.IsNotFound(err) {
+		return "", aicrErrors.Wrap(aicrErrors.ErrCodeInternal, "failed to get preflight pod", err)
+	}
+
+	watcher, err := podsClient.Watch(waitCtx, metav1.ListOptions{
+		FieldSelector: "metadata.name=" + name,
+	})
+	if err != nil {
+		return "", aicrErrors.Wrap(aicrErrors.ErrCodeInternal, "failed to watch preflight pod", err)
+	}
+	defer watcher.Stop()
+
+	for {
+		select {
+		case <-waitCtx.Done():
+			return "", aicrErrors.WrapWithContext(aicrErrors.ErrCodeTimeout,
+				"NVreg preflight pod did not terminate in time", waitCtx.Err(),
+				map[string]interface{}{"pod": name})
+		case event, ok := <-watcher.ResultChan():
+			if !ok {
+				return "", aicrErrors.New(aicrErrors.ErrCodeInternal,
+					"preflight pod watch channel closed unexpectedly")
+			}
+			if event.Type == watch.Deleted {
+				return "", aicrErrors.New(aicrErrors.ErrCodeInternal,
+					"preflight pod deleted before completion")
+			}
+			p, ok := event.Object.(*corev1.Pod)
+			if !ok {
+				continue
+			}
+			if p.Status.Phase == corev1.PodSucceeded || p.Status.Phase == corev1.PodFailed {
+				return p.Status.Phase, nil
+			}
+		}
+	}
 }
 
 // gb200NetPreflightApplies reports whether the preflight check should run for
