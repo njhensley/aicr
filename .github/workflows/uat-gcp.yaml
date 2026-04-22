@@ -163,13 +163,15 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+          yq -i '.deployment.destroy = "true"' "$CLUSTER_CONFIG"
+          cat "$CLUSTER_CONFIG"
           for attempt in 1 2 3; do
             echo "Destroy attempt ${attempt}..."
             if docker run \
               -e CONFIG_CONTENT="$(base64 < $CLUSTER_CONFIG)" \
               -e AUTO_APPROVE=true \
               -e KEY_CONTENT="$(base64 < ${{ steps.auth.outputs.credentials_file_path }})" \
-              ${{ env.GKE_ACTUATOR_IMAGE }} destroy; then
+              ${{ env.GKE_ACTUATOR_IMAGE }} apply; then
               echo "Cluster destroyed successfully"
               break
             fi
