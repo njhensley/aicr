@@ -23,7 +23,7 @@ deployment:
   state: tenancy
   destroy: false
   tags:
-    env: dev
+    env: demo
 
 cluster:
   gke:
@@ -105,7 +105,7 @@ compute:
           nodeConfig:
             gvnic: true
             capacityReservations:
-              - projects/eidosx/reservations/aicr-uat-h100
+              - projects/nv-dgxcloudprod-20240108/reservations/h100-a3-mega-phase-1-general-pool-384-us-c1-reservation
             taints:
               - key: dedicated
                 value: gpu-workload

@@ -35,9 +35,9 @@ jobs:
       GCP_REGION: "us-central1"
       GCP_WIF_PROVIDER: "projects/116689922666/locations/global/workloadIdentityPools/github-actions-pool/providers/github-actions-provider"
       GCP_WIF_SERVICE_ACCOUNT: "github-actions@eidosx.iam.gserviceaccount.com"
-      DEPLOYMENT_ID: "aicr-uat-${{ github.run_id }}"
+      DEPLOYMENT_ID: "aicr-${{ github.run_id }}"
       CLUSTER_CONFIG: tests/uat/gcp/config.yaml
-      GKE_IMAGE: "ghcr.io/mchmarny/cluster/gke@sha256:placeholder"
+      GKE_ACTUATOR_IMAGE: "ghcr.io/mchmarny/cluster/gke:latest"
       VALIDATOR_IMAGE_PREFIX: "ghcr.io/nvidia/aicr-validators"
       VALIDATOR_TAG: "uat-${{ github.run_id }}"
 
@@ -94,29 +94,6 @@ jobs:
       - name: Setup gcloud
         uses: google-github-actions/setup-gcloud@77e7a554d41e2ee56fc945c52dfd3f33d12def9a  # v2.1.4
 
-      # Capacity check (reads reservation path and zone from cluster config)
-      - name: Check GPU node pool capacity
-        id: capacity
-        run: |
-          set -euo pipefail
-          GPU_WORKER='.compute.gke.nodePools.workers[] | select(.name == "gpu-worker")'
-          # Reservation path: projects/<project>/reservations/<name>
-          RESERVATION_PATH=$(yq eval "${GPU_WORKER}.nodeConfig.capacityReservations[0]" "$CLUSTER_CONFIG")
-          RESERVATION=$(echo "${RESERVATION_PATH}" | awk -F/ '{print $NF}')
-          ZONE=$(yq eval "${GPU_WORKER}.zones[0]" "$CLUSTER_CONFIG")
-          echo "Reservation: ${RESERVATION}, zone: ${ZONE}"
-
-          AVAILABLE=$(gcloud compute reservations describe "${RESERVATION}" \
-            --project="${GCP_PROJECT_ID}" \
-            --zone="${ZONE}" \
-            --format="value(specificReservation.count - specificReservation.inUseCount)")
-          echo "available=${AVAILABLE}" >> "$GITHUB_OUTPUT"
-          echo "Available instances in reservation ${RESERVATION}: ${AVAILABLE}"
-          if [[ "${AVAILABLE}" -lt 1 ]]; then
-            echo "::error::No available instances in reservation ${RESERVATION} (zone: ${ZONE})"
-            exit 1
-          fi
-
       # Deps
       - name: Install tools
         id: deps
@@ -135,7 +112,6 @@ jobs:
         run: |
           set -euox pipefail
           yq -i '.deployment.id = strenv(DEPLOYMENT_ID)' "$CLUSTER_CONFIG"
-          yq -i '.cluster.name = strenv(DEPLOYMENT_ID)' "$CLUSTER_CONFIG"
           cat "$CLUSTER_CONFIG"
 
       # Bringup
@@ -146,10 +122,14 @@ jobs:
           docker run \
             -e CONFIG_CONTENT="$(base64 < $CLUSTER_CONFIG)" \
             -e AUTO_APPROVE=true \
-            -e GOOGLE_APPLICATION_CREDENTIALS_CONTENT="$(base64 < ${{ steps.auth.outputs.credentials_file_path }})" \
-            ${{ env.GKE_IMAGE }} apply
+            -e KEY_CONTENT="$(base64 < ${{ steps.auth.outputs.credentials_file_path }})" \
+            ${{ env.GKE_ACTUATOR_IMAGE }} apply
 
       # Connect
+      - name: Install GKE auth plugin
+        if: steps.infra.outcome == 'success'
+        run: gcloud components install gke-gcloud-auth-plugin --quiet
+
       - name: Connect to Cluster
         id: client
         if: steps.infra.outcome == 'success'
@@ -188,8 +168,8 @@ jobs:
             if docker run \
               -e CONFIG_CONTENT="$(base64 < $CLUSTER_CONFIG)" \
               -e AUTO_APPROVE=true \
-              -e GOOGLE_APPLICATION_CREDENTIALS_CONTENT="$(base64 < ${{ steps.auth.outputs.credentials_file_path }})" \
-              ${{ env.GKE_IMAGE }} destroy; then
+              -e KEY_CONTENT="$(base64 < ${{ steps.auth.outputs.credentials_file_path }})" \
+              ${{ env.GKE_ACTUATOR_IMAGE }} destroy; then
               echo "Cluster destroyed successfully"
               break
             fi
@@ -234,7 +214,6 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Phase | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Capacity | ${{ steps.capacity.outcome }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Dependencies | ${{ steps.deps.outcome }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Config | ${{ steps.config.outcome }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Cluster | ${{ steps.infra.outcome }} |" >> $GITHUB_STEP_SUMMARY
