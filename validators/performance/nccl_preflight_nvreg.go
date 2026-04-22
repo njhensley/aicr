@@ -255,6 +255,17 @@ func waitForPreflightPodPhase(ctx context.Context, clientset kubernetes.Interfac
 	}
 	defer watcher.Stop()
 
+	// Re-check after the watch is established: the pod may have reached a
+	// terminal phase between the first Get and the Watch call, in which case
+	// the watch will not replay the transition.
+	if current, err := podsClient.Get(waitCtx, name, metav1.GetOptions{}); err == nil {
+		if p := current.Status.Phase; p == corev1.PodSucceeded || p == corev1.PodFailed {
+			return p, nil
+		}
+	} else if !apierrors.IsNotFound(err) {
+		return "", aicrErrors.Wrap(aicrErrors.ErrCodeInternal, "failed to get preflight pod", err)
+	}
+
 	for {
 		select {
 		case <-waitCtx.Done():

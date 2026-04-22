@@ -578,6 +578,17 @@ func waitForIMEXClaimTemplate(ctx context.Context, dynamicClient dynamic.Interfa
 	}
 	defer watcher.Stop()
 
+	// Re-check after the watch is established: the DRA driver may have
+	// reconciled the RCT between the first Get and the Watch call, in which
+	// case the watch will not replay the Added event.
+	if _, err := rctClient.Get(waitCtx, ncclIMEXClaimTemplateName, metav1.GetOptions{}); err == nil {
+		slog.Info("IMEX ResourceClaimTemplate ready", "name", ncclIMEXClaimTemplateName)
+		return nil
+	} else if !apierrors.IsNotFound(err) {
+		return aicrErrors.Wrap(aicrErrors.ErrCodeInternal,
+			"failed to get IMEX ResourceClaimTemplate", err)
+	}
+
 	for {
 		select {
 		case <-waitCtx.Done():
