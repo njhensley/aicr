@@ -86,15 +86,6 @@ var (
 		Version:  "v1beta1",
 		Resource: "computedomains",
 	}
-
-	// resourceClaimTemplateGVR is the standard K8s DRA RCT, used to poll for
-	// the auto-generated template after ComputeDomain creation (race against
-	// the DRA controller reconciling the CR into an RCT).
-	resourceClaimTemplateGVR = schema.GroupVersionResource{
-		Group:    "resource.k8s.io",
-		Version:  "v1",
-		Resource: "resourceclaimtemplates",
-	}
 )
 
 const (
