@@ -450,6 +450,38 @@ validators:
 	}
 }
 
+// TestResolveImageCIContract verifies that:
+//  1. .goreleaser.yaml injects FullCommit (not ShortCommit) so the CLI has a
+//     40-char SHA matching on-push.yaml's image tags.
+//  2. ResolveImage produces the correct :sha-<commit> tag with a full SHA.
+func TestResolveImageCIContract(t *testing.T) {
+	t.Setenv("AICR_VALIDATOR_IMAGE_REGISTRY", "")
+
+	// Guard: .goreleaser.yaml must use FullCommit for both aicr and aicrd.
+	data, err := os.ReadFile("../../../.goreleaser.yaml")
+	if err != nil {
+		t.Fatalf("failed to read .goreleaser.yaml: %v", err)
+	}
+	for _, want := range []string{
+		"pkg/cli.commit={{.FullCommit}}",
+		"pkg/api.commit={{.FullCommit}}",
+	} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("goreleaser must inject FullCommit so :sha-<commit> matches on-push.yaml; missing %q", want)
+		}
+	}
+
+	// Verify ResolveImage produces the expected tag with a full 40-char SHA.
+	const img = "ghcr.io/nvidia/aicr-validators/deployment:latest"
+	fullCommit := "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+
+	got := ResolveImage(img, "dev", fullCommit)
+	want := "ghcr.io/nvidia/aicr-validators/deployment:sha-" + fullCommit
+	if got != want {
+		t.Fatalf("ResolveImage with full SHA:\n  got  %q\n  want %q", got, want)
+	}
+}
+
 func TestResolveImage(t *testing.T) {
 	const imgLatest = "ghcr.io/nvidia/aicr-validators/aiperf-bench:latest"
 	const imgPinned = "ghcr.io/nvidia/aicr-validators/aiperf-bench:v1.2.3"
