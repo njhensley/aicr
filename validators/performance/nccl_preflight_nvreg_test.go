@@ -18,8 +18,6 @@ import (
 	"testing"
 
 	"github.com/NVIDIA/aicr/pkg/recipe"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func TestParseNVregFromParams(t *testing.T) {
@@ -103,83 +101,4 @@ func TestGB200NetPreflightApplies(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestFilterPreflightNodes(t *testing.T) {
-	mkNode := func(name string, labels map[string]string) corev1.Node {
-		return corev1.Node{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Labels: labels},
-		}
-	}
-	gb200a := mkNode("gb200-a", map[string]string{"node.kubernetes.io/instance-type": "p6e-gb200.36xlarge", "gpu-pool": "gb200"})
-	gb200b := mkNode("gb200-b", map[string]string{"node.kubernetes.io/instance-type": "p6e-gb200.36xlarge", "gpu-pool": "gb200"})
-	h100a := mkNode("h100-a", map[string]string{"node.kubernetes.io/instance-type": "p5.48xlarge", "gpu-pool": "h100"})
-	unlabeled := mkNode("bare", nil)
-
-	tests := []struct {
-		name     string
-		nodes    []corev1.Node
-		override map[string]string
-		service  recipe.CriteriaServiceType
-		wantLen  int
-		wantName string // first node name if wantLen==1, else ""
-	}{
-		{
-			name:    "EKS mixed instance types — filter to first node's type",
-			nodes:   []corev1.Node{gb200a, gb200b, h100a},
-			service: recipe.CriteriaServiceEKS,
-			wantLen: 2,
-		},
-		{
-			name:    "EKS homogeneous — returns all",
-			nodes:   []corev1.Node{gb200a, gb200b},
-			service: recipe.CriteriaServiceEKS,
-			wantLen: 2,
-		},
-		{
-			name:     "user override narrows by arbitrary label",
-			nodes:    []corev1.Node{gb200a, gb200b, h100a},
-			override: map[string]string{"gpu-pool": "h100"},
-			service:  recipe.CriteriaServiceEKS,
-			wantLen:  1,
-			wantName: "h100-a",
-		},
-		{
-			name:    "non-EKS service and no override — probe all",
-			nodes:   []corev1.Node{gb200a, h100a},
-			service: recipe.CriteriaServiceOKE,
-			wantLen: 2,
-		},
-		{
-			name:    "EKS first node missing instance-type label — probe all",
-			nodes:   []corev1.Node{unlabeled, gb200a},
-			service: recipe.CriteriaServiceEKS,
-			wantLen: 2,
-		},
-		{
-			name:    "empty input",
-			nodes:   nil,
-			service: recipe.CriteriaServiceEKS,
-			wantLen: 0,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := filterPreflightNodes(tt.nodes, tt.override, tt.service)
-			if len(got) != tt.wantLen {
-				t.Fatalf("filterPreflightNodes() len = %d, want %d (got %+v)", len(got), tt.wantLen, nodeNames(got))
-			}
-			if tt.wantName != "" && got[0].Name != tt.wantName {
-				t.Errorf("filterPreflightNodes()[0].Name = %q, want %q", got[0].Name, tt.wantName)
-			}
-		})
-	}
-}
-
-func nodeNames(nodes []corev1.Node) []string {
-	out := make([]string, len(nodes))
-	for i, n := range nodes {
-		out[i] = n.Name
-	}
-	return out
 }

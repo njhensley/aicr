@@ -203,8 +203,10 @@ func validateNcclAllReduceBw(ctx *validators.Context, constraint recipe.Constrai
 	}
 	slog.Info("Target bandwidth threshold", "threshold", threshold, "tolerance", "10%")
 
-	// Determine GPU configuration from cluster.
-	gpuConfig, err := determineGPUConfig(ctx)
+	// Determine GPU configuration from cluster. Nodes are already narrowed
+	// to the TrainJob's target set, so WorkerCount / preflight / EFA
+	// discovery / worker placement all operate on the same node set.
+	gpuConfig, err := determineGPUConfig(ctx, service)
 	if err != nil {
 		return "", false, aicrErrors.Wrap(aicrErrors.ErrCodeInternal, "failed to determine GPU configuration", err)
 	}
@@ -221,15 +223,11 @@ func validateNcclAllReduceBw(ctx *validators.Context, constraint recipe.Constrai
 	// Preflight cluster-side prerequisites before spending TrainJob time.
 	// On GB200/EKS the NET variant needs NVreg_GrdmaPciTopoCheckOverride=1
 	// on the NVIDIA driver; without it, EFA can't attach dma-buf to GPU HBM
-	// and NCCL silently falls back to Socket.
+	// and NCCL silently falls back to Socket. gpuConfig.Nodes is already
+	// the target subset (resolveTargetGPUNodes), so the probe won't
+	// false-fail on nodes the workload never touches.
 	if gb200NetPreflightApplies(variant, accelerator, service) {
-		// Probe only nodes the TrainJob would actually schedule on. On
-		// mixed-instance EKS clusters (p6e-gb200 + p5-h100, etc.) a
-		// gpu-operator ClusterPolicy with node affinity may ship the NVreg
-		// flag to the GB200 subset only; probing every GPU node would
-		// false-fail on nodes the workload never touches.
-		targetNodes := filterPreflightNodes(gpuConfig.Nodes, ctx.NodeSelector, service)
-		if pfErr := preflightGB200NetNVregFlag(ctx, targetNodes); pfErr != nil {
+		if pfErr := preflightGB200NetNVregFlag(ctx, gpuConfig.Nodes); pfErr != nil {
 			return "", false, pfErr
 		}
 	}
@@ -350,8 +348,72 @@ func parseThreshold(value string) (float64, error) {
 	return threshold, nil
 }
 
-// determineGPUConfig analyzes the snapshot to determine GPU node configuration
-func determineGPUConfig(ctx *validators.Context) (*gpuConfiguration, error) {
+// resolveTargetGPUNodes narrows the full schedulable GPU set to the subset
+// the NCCL TrainJob will actually schedule workers onto, along with the
+// effective node selector used to derive that subset. Shared by every
+// downstream consumer (WorkerCount / GPU_COUNT sizing, NVreg preflight,
+// EFA discovery, worker podSpec placement) so the TrainJob cannot request
+// more workers than the selector can match.
+//
+// Precedence mirrors applyNCCLResources' effective selector:
+//  1. override (ctx.NodeSelector — user --node-selector) if non-empty.
+//  2. On EKS, the first node's node.kubernetes.io/instance-type label
+//     (same key platformWorkerScheduling stamps into the worker podSpec).
+//  3. No filter — services without a discoverable default selector key
+//     fall back to the full input set. Worker placement on those services
+//     comes from platformWorkerScheduling's own defaults or the user's
+//     override.
+//
+// Heterogeneous-cluster contract: the automatic path (case 2) handles
+// clusters that are homogeneous within the GPU pool. On a truly mixed
+// cluster (e.g. p6e-gb200 + p5-h100 under one EKS control plane) the
+// operator must pass --node-selector to name the pool they want, per
+// the project-wide convention also used by inference_perf_constraint.go.
+// A future cross-validator improvement (tracked as the existing TODO in
+// nccl_eks_utils.go) would auto-select the accelerator via the GPU
+// Operator's nvidia.com/gpu.product label and recipe Criteria.Accelerator,
+// closing the "first node's instance type" arbitrariness on mixed
+// clusters — out of scope here because it needs to land in
+// inference-perf the same way.
+//
+// Returns an error when the effective selector matches zero of the input
+// nodes. Callers treat len==1 as the single-node-skip condition via the
+// existing WorkerCount < 2 gate.
+func resolveTargetGPUNodes(nodes []v1.Node, override map[string]string, service recipe.CriteriaServiceType) ([]v1.Node, map[string]string, error) {
+	selector := override
+	if len(selector) == 0 && service == recipe.CriteriaServiceEKS && len(nodes) > 0 {
+		if it := nodes[0].Labels["node.kubernetes.io/instance-type"]; it != "" {
+			selector = map[string]string{"node.kubernetes.io/instance-type": it}
+		}
+	}
+	if len(selector) == 0 {
+		return nodes, nil, nil
+	}
+	out := make([]v1.Node, 0, len(nodes))
+	for _, n := range nodes {
+		match := true
+		for k, v := range selector {
+			if n.Labels[k] != v {
+				match = false
+				break
+			}
+		}
+		if match {
+			out = append(out, n)
+		}
+	}
+	if len(out) == 0 {
+		return nil, selector, aicrErrors.New(aicrErrors.ErrCodeInternal,
+			fmt.Sprintf("effective node selector %v matches zero of %d GPU nodes", selector, len(nodes)))
+	}
+	return out, selector, nil
+}
+
+// determineGPUConfig analyzes the snapshot to determine GPU node configuration.
+// The returned Nodes slice is already narrowed to the TrainJob's target set
+// via resolveTargetGPUNodes so WorkerCount, GPUCountPerNode, and TotalGPUCount
+// agree with what the worker podSpec will later schedule onto.
+func determineGPUConfig(ctx *validators.Context, service recipe.CriteriaServiceType) (*gpuConfiguration, error) {
 	slog.Info("Analyzing GPU node configuration...")
 
 	// Find schedulable GPU nodes
@@ -366,8 +428,21 @@ func determineGPUConfig(ctx *validators.Context) (*gpuConfiguration, error) {
 
 	slog.Info("Found GPU nodes", "count", len(gpuNodes))
 
-	// Get GPU count from first node (assuming homogeneous cluster)
-	firstNode := gpuNodes[0]
+	// Narrow to the subset the TrainJob will actually schedule onto. On
+	// mixed-instance clusters (e.g. p6e-gb200 + p5-h100 under one EKS
+	// control plane) this keeps WORKER_COUNT from overshooting the
+	// selector's match set and leaving workers Pending.
+	targetNodes, selector, err := resolveTargetGPUNodes(gpuNodes, ctx.NodeSelector, service)
+	if err != nil {
+		return nil, err
+	}
+	if len(selector) > 0 && len(targetNodes) < len(gpuNodes) {
+		slog.Info("Narrowed GPU nodes to TrainJob target set",
+			"selector", selector, "total", len(gpuNodes), "target", len(targetNodes))
+	}
+
+	// Get GPU count from first target node (assuming homogeneous target set)
+	firstNode := targetNodes[0]
 	gpuResource := v1.ResourceName("nvidia.com/gpu")
 	gpuQuantity := firstNode.Status.Allocatable[gpuResource]
 	gpuCountPerNode := int(gpuQuantity.Value())
@@ -376,14 +451,14 @@ func determineGPUConfig(ctx *validators.Context) (*gpuConfiguration, error) {
 		return nil, aicrErrors.New(aicrErrors.ErrCodeInternal, "no GPUs found on nodes")
 	}
 
-	totalGPUs := len(gpuNodes) * gpuCountPerNode
+	totalGPUs := len(targetNodes) * gpuCountPerNode
 
 	return &gpuConfiguration{
-		WorkerCount:     len(gpuNodes),
+		WorkerCount:     len(targetNodes),
 		GPUCountPerNode: gpuCountPerNode,
 		TotalGPUCount:   totalGPUs,
 		Namespace:       ctx.Namespace,
-		Nodes:           gpuNodes,
+		Nodes:           targetNodes,
 	}, nil
 }
 

@@ -17,11 +17,13 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/NVIDIA/aicr/pkg/recipe"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
@@ -210,6 +212,101 @@ func TestApplyNCCLWorkerScheduling_Both(t *testing.T) {
 		if tol["key"] != "custom-taint" || tol["value"] != "true" || tol["effect"] != "NoSchedule" {
 			t.Errorf("toleration = %v, want custom-taint=true:NoSchedule", tol)
 		}
+	}
+}
+
+func TestResolveTargetGPUNodes(t *testing.T) {
+	mkNode := func(name string, labels map[string]string) corev1.Node {
+		return corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Labels: labels},
+		}
+	}
+	gb200a := mkNode("gb200-a", map[string]string{"node.kubernetes.io/instance-type": "p6e-gb200.36xlarge", "gpu-pool": "gb200"})
+	gb200b := mkNode("gb200-b", map[string]string{"node.kubernetes.io/instance-type": "p6e-gb200.36xlarge", "gpu-pool": "gb200"})
+	h100a := mkNode("h100-a", map[string]string{"node.kubernetes.io/instance-type": "p5.48xlarge", "gpu-pool": "h100"})
+	unlabeled := mkNode("bare", nil)
+
+	tests := []struct {
+		name         string
+		nodes        []corev1.Node
+		override     map[string]string
+		service      recipe.CriteriaServiceType
+		wantNames    []string // ordered node names in the result; nil means no match
+		wantSelector map[string]string
+		wantErr      bool
+	}{
+		{
+			name:         "EKS mixed instance types — narrow to first node's type",
+			nodes:        []corev1.Node{gb200a, gb200b, h100a},
+			service:      recipe.CriteriaServiceEKS,
+			wantNames:    []string{"gb200-a", "gb200-b"},
+			wantSelector: map[string]string{"node.kubernetes.io/instance-type": "p6e-gb200.36xlarge"},
+		},
+		{
+			name:         "EKS homogeneous — returns all",
+			nodes:        []corev1.Node{gb200a, gb200b},
+			service:      recipe.CriteriaServiceEKS,
+			wantNames:    []string{"gb200-a", "gb200-b"},
+			wantSelector: map[string]string{"node.kubernetes.io/instance-type": "p6e-gb200.36xlarge"},
+		},
+		{
+			name:         "user override narrows by arbitrary label",
+			nodes:        []corev1.Node{gb200a, gb200b, h100a},
+			override:     map[string]string{"gpu-pool": "h100"},
+			service:      recipe.CriteriaServiceEKS,
+			wantNames:    []string{"h100-a"},
+			wantSelector: map[string]string{"gpu-pool": "h100"},
+		},
+		{
+			name:         "non-EKS service and no override — returns all, no selector",
+			nodes:        []corev1.Node{gb200a, h100a},
+			service:      recipe.CriteriaServiceOKE,
+			wantNames:    []string{"gb200-a", "h100-a"},
+			wantSelector: nil,
+		},
+		{
+			name:         "EKS first node missing instance-type label — returns all, no selector",
+			nodes:        []corev1.Node{unlabeled, gb200a},
+			service:      recipe.CriteriaServiceEKS,
+			wantNames:    []string{"bare", "gb200-a"},
+			wantSelector: nil,
+		},
+		{
+			name:         "override selecting zero — error with selector in result",
+			nodes:        []corev1.Node{gb200a, gb200b},
+			override:     map[string]string{"gpu-pool": "h100"},
+			service:      recipe.CriteriaServiceEKS,
+			wantSelector: map[string]string{"gpu-pool": "h100"},
+			wantErr:      true,
+		},
+		{
+			name:         "empty input, no override",
+			nodes:        nil,
+			service:      recipe.CriteriaServiceEKS,
+			wantNames:    nil,
+			wantSelector: nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, gotSelector, err := resolveTargetGPUNodes(tt.nodes, tt.override, tt.service)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("resolveTargetGPUNodes() err = %v, wantErr = %v", err, tt.wantErr)
+			}
+			if !reflect.DeepEqual(gotSelector, tt.wantSelector) {
+				t.Errorf("selector = %v, want %v", gotSelector, tt.wantSelector)
+			}
+			if tt.wantErr {
+				return
+			}
+			var gotNames []string
+			for _, n := range got {
+				gotNames = append(gotNames, n.Name)
+			}
+			if !reflect.DeepEqual(gotNames, tt.wantNames) {
+				t.Errorf("nodes = %v, want %v", gotNames, tt.wantNames)
+			}
+		})
 	}
 }
 
