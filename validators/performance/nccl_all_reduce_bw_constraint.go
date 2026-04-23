@@ -815,22 +815,54 @@ func waitForLauncherPodAndGetLogs(ctx *validators.Context, podHelper *helper.Pod
 	return logs, nil
 }
 
-// waitForTrainingRuntime polls until the TrainingRuntime is visible via GET.
-// The Trainer admission webhook validates that the referenced runtime exists
-// before allowing TrainJob creation; a brief propagation delay can cause a race.
+// waitForTrainingRuntime waits until the TrainingRuntime is visible via the
+// Trainer admission webhook. The webhook validates that the referenced
+// runtime exists before allowing TrainJob creation; a brief propagation
+// delay can cause a race. Uses the watch API per CLAUDE.md "Kubernetes
+// Patterns" and mirrors waitForIMEXClaimTemplate above.
 func waitForTrainingRuntime(ctx context.Context, dynamicClient dynamic.Interface, namespace string) error {
 	waitCtx, cancel := context.WithTimeout(ctx, defaults.DiagnosticTimeout)
 	defer cancel()
 
+	runtimeClient := dynamicClient.Resource(trainingRuntimeGVR).Namespace(namespace)
+
+	// Fast path: runtime may already be visible (warm cluster / re-run).
+	if _, err := runtimeClient.Get(waitCtx, ncclTrainingRuntimeName, metav1.GetOptions{}); err == nil {
+		return nil
+	} else if !apierrors.IsNotFound(err) {
+		return aicrErrors.Wrap(aicrErrors.ErrCodeInternal, "failed to get TrainingRuntime", err)
+	}
+
+	watcher, err := runtimeClient.Watch(waitCtx, metav1.ListOptions{
+		FieldSelector: "metadata.name=" + ncclTrainingRuntimeName,
+	})
+	if err != nil {
+		return aicrErrors.Wrap(aicrErrors.ErrCodeInternal, "failed to watch TrainingRuntime", err)
+	}
+	defer watcher.Stop()
+
+	// Re-check after the watch is established: the runtime may have become
+	// visible between the first Get and the Watch call, in which case the
+	// watch will not replay the Added event.
+	if _, err := runtimeClient.Get(waitCtx, ncclTrainingRuntimeName, metav1.GetOptions{}); err == nil {
+		return nil
+	} else if !apierrors.IsNotFound(err) {
+		return aicrErrors.Wrap(aicrErrors.ErrCodeInternal, "failed to get TrainingRuntime", err)
+	}
+
 	for {
-		_, err := dynamicClient.Resource(trainingRuntimeGVR).Namespace(namespace).Get(waitCtx, ncclTrainingRuntimeName, metav1.GetOptions{})
-		if err == nil {
-			return nil
-		}
 		select {
 		case <-waitCtx.Done():
-			return aicrErrors.Wrap(aicrErrors.ErrCodeTimeout, "timed out waiting for TrainingRuntime to be visible", waitCtx.Err())
-		case <-time.After(defaults.TrainingRuntimePollInterval):
+			return aicrErrors.Wrap(aicrErrors.ErrCodeTimeout,
+				"timed out waiting for TrainingRuntime to be visible", waitCtx.Err())
+		case event, ok := <-watcher.ResultChan():
+			if !ok {
+				return aicrErrors.New(aicrErrors.ErrCodeInternal,
+					"TrainingRuntime watch channel closed unexpectedly")
+			}
+			if event.Type == watch.Added || event.Type == watch.Modified {
+				return nil
+			}
 		}
 	}
 }
