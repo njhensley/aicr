@@ -25,7 +25,7 @@ import (
 )
 
 func TestLoadEmbeddedCatalog(t *testing.T) {
-	catalog, err := Load("")
+	catalog, err := Load("", "")
 	if err != nil {
 		t.Fatalf("Load() failed: %v", err)
 	}
@@ -156,7 +156,7 @@ validators:
 }
 
 func TestForPhaseNoMatch(t *testing.T) {
-	catalog, err := Load("")
+	catalog, err := Load("", "")
 	if err != nil {
 		t.Fatalf("Load() failed: %v", err)
 	}
@@ -337,7 +337,7 @@ func TestReplaceRegistry(t *testing.T) {
 func TestLoadWithRegistryOverride(t *testing.T) {
 	t.Setenv("AICR_VALIDATOR_IMAGE_REGISTRY", "localhost:5001")
 
-	cat, err := Load("")
+	cat, err := Load("", "")
 	if err != nil {
 		t.Fatalf("Load() failed: %v", err)
 	}
@@ -352,7 +352,7 @@ func TestLoadWithRegistryOverride(t *testing.T) {
 func TestLoadWithoutRegistryOverride(t *testing.T) {
 	t.Setenv("AICR_VALIDATOR_IMAGE_REGISTRY", "")
 
-	cat, err := Load("")
+	cat, err := Load("", "")
 	if err != nil {
 		t.Fatalf("Load() failed: %v", err)
 	}
@@ -414,7 +414,7 @@ validators:
 	defer recipe.SetDataProvider(originalProvider)
 
 	// Load catalog — should merge embedded + external
-	cat, err := Load("")
+	cat, err := Load("", "")
 	if err != nil {
 		t.Fatalf("Load() failed: %v", err)
 	}
@@ -458,6 +458,7 @@ func TestResolveImage(t *testing.T) {
 		name     string
 		image    string
 		version  string
+		commit   string
 		registry string // if non-empty, sets AICR_VALIDATOR_IMAGE_REGISTRY for the test
 		want     string
 	}{
@@ -472,6 +473,25 @@ func TestResolveImage(t *testing.T) {
 			image:   imgLatest,
 			version: "v0.11.1-next",
 			want:    imgLatest,
+		},
+		{
+			name:    "git-describe snapshot is not a release",
+			image:   imgLatest,
+			version: "v0.0.0-12-gabc1234",
+			want:    imgLatest,
+		},
+		{
+			name:    "pre-release rc suffix is not a release",
+			image:   imgLatest,
+			version: "v1.0.0-rc1",
+			want:    imgLatest,
+		},
+		{
+			name:    "snapshot with valid commit resolves to sha tag",
+			image:   imgLatest,
+			version: "v0.0.0-12-gabc1234",
+			commit:  "abc1234",
+			want:    "ghcr.io/nvidia/aicr-validators/aiperf-bench:sha-abc1234",
 		},
 		{
 			name:    "release version rewrites :latest to :vX.Y.Z",
@@ -505,6 +525,91 @@ func TestResolveImage(t *testing.T) {
 			registry: "localhost:5001",
 			want:     "localhost:5001/aicr-validators/aiperf-bench:v0.11.1",
 		},
+		{
+			name:    "dev version with valid commit resolves to sha tag",
+			image:   imgLatest,
+			version: "dev",
+			commit:  "abc1234",
+			want:    "ghcr.io/nvidia/aicr-validators/aiperf-bench:sha-abc1234",
+		},
+		{
+			name:    "dev version with unknown commit keeps latest",
+			image:   imgLatest,
+			version: "dev",
+			commit:  "unknown",
+			want:    imgLatest,
+		},
+		{
+			name:    "dev version with empty commit keeps latest",
+			image:   imgLatest,
+			version: "dev",
+			commit:  "",
+			want:    imgLatest,
+		},
+		{
+			name:    "dev version with too-short commit keeps latest",
+			image:   imgLatest,
+			version: "dev",
+			commit:  "abc12",
+			want:    imgLatest,
+		},
+		{
+			name:    "dev version with 40-char full SHA resolves",
+			image:   imgLatest,
+			version: "dev",
+			commit:  "abcdef1234abcdef1234abcdef1234abcdef1234", // exactly 40 hex chars
+			want:    "ghcr.io/nvidia/aicr-validators/aiperf-bench:sha-abcdef1234abcdef1234abcdef1234abcdef1234",
+		},
+		{
+			name:    "dev version with 41-char commit keeps latest",
+			image:   imgLatest,
+			version: "dev",
+			commit:  "abcdef1234abcdef1234abcdef1234abcdef12345", // 41 hex chars
+			want:    imgLatest,
+		},
+		{
+			name:    "dev version with non-hex commit keeps latest",
+			image:   imgLatest,
+			version: "dev",
+			commit:  "xyz1234",
+			want:    imgLatest,
+		},
+		{
+			name:    "-next version with valid commit resolves to sha tag",
+			image:   imgLatest,
+			version: "v0.11.1-next",
+			commit:  "abc1234",
+			want:    "ghcr.io/nvidia/aicr-validators/aiperf-bench:sha-abc1234",
+		},
+		{
+			name:    "release version ignores commit (release takes precedence)",
+			image:   imgLatest,
+			version: "v0.11.1",
+			commit:  "abc1234",
+			want:    "ghcr.io/nvidia/aicr-validators/aiperf-bench:v0.11.1",
+		},
+		{
+			name:    "explicit tag not modified by commit",
+			image:   imgPinned,
+			version: "dev",
+			commit:  "abc1234",
+			want:    imgPinned,
+		},
+		{
+			name:     "dev + commit + registry override compose",
+			image:    imgLatest,
+			version:  "dev",
+			commit:   "abc1234",
+			registry: "localhost:5001",
+			want:     "localhost:5001/aicr-validators/aiperf-bench:sha-abc1234",
+		},
+		{
+			name:    "uppercase commit is normalized to lowercase",
+			image:   imgLatest,
+			version: "dev",
+			commit:  "ABC1234",
+			want:    "ghcr.io/nvidia/aicr-validators/aiperf-bench:sha-abc1234",
+		},
 	}
 
 	for _, tt := range tests {
@@ -514,9 +619,9 @@ func TestResolveImage(t *testing.T) {
 			} else {
 				t.Setenv("AICR_VALIDATOR_IMAGE_REGISTRY", "")
 			}
-			got := ResolveImage(tt.image, tt.version)
+			got := ResolveImage(tt.image, tt.version, tt.commit)
 			if got != tt.want {
-				t.Errorf("ResolveImage(%q, %q) = %q, want %q", tt.image, tt.version, got, tt.want)
+				t.Errorf("ResolveImage(%q, %q, %q) = %q, want %q", tt.image, tt.version, tt.commit, got, tt.want)
 			}
 		})
 	}

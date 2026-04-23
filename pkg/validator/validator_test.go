@@ -54,6 +54,7 @@ func TestNewDefaults(t *testing.T) {
 func TestNewWithOptions(t *testing.T) {
 	v := New(
 		WithVersion("1.0.0"),
+		WithCommit("abc1234"),
 		WithNamespace("custom-ns"),
 		WithRunID("test-run"),
 		WithCleanup(false),
@@ -64,6 +65,9 @@ func TestNewWithOptions(t *testing.T) {
 
 	if v.Version != "1.0.0" {
 		t.Errorf("Version = %q, want %q", v.Version, "1.0.0")
+	}
+	if v.Commit != "abc1234" {
+		t.Errorf("Commit = %q, want %q", v.Commit, "abc1234")
 	}
 	if v.Namespace != "custom-ns" {
 		t.Errorf("Namespace = %q, want %q", v.Namespace, "custom-ns")
@@ -99,7 +103,7 @@ func TestGenerateRunID(t *testing.T) {
 
 func loadEmbeddedCatalog(t *testing.T) *catalog.ValidatorCatalog {
 	t.Helper()
-	cat, err := catalog.Load("")
+	cat, err := catalog.Load("", "")
 	if err != nil {
 		t.Fatalf("failed to load catalog: %v", err)
 	}
@@ -406,7 +410,7 @@ func TestPhaseOrder(t *testing.T) {
 // in recipe overlays exists in the validator catalog for the correct phase.
 // Catches typos and drift between recipes and catalog at PR time.
 func TestRecipeCheckNamesMatchCatalog(t *testing.T) {
-	cat, err := catalog.Load("")
+	cat, err := catalog.Load("", "")
 	if err != nil {
 		t.Fatalf("failed to load catalog: %v", err)
 	}

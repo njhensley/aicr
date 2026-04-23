@@ -20,6 +20,7 @@ package catalog
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -100,10 +101,12 @@ type EnvVar struct {
 // Image tag resolution (applied in order):
 //  1. If a catalog entry uses :latest and version is a release (vX.Y.Z),
 //     the tag is replaced with the CLI version for reproducibility.
-//  2. If AICR_VALIDATOR_IMAGE_REGISTRY is set, the registry prefix is replaced.
+//  2. If version is a non-release dev build and commit is a valid short SHA,
+//     the tag is replaced with :sha-<commit> to match on-push.yaml image tags.
+//  3. If AICR_VALIDATOR_IMAGE_REGISTRY is set, the registry prefix is replaced.
 //
 // Entries with explicit version tags (e.g., :v1.2.3) are never modified.
-func Load(version string) (*ValidatorCatalog, error) {
+func Load(version, commit string) (*ValidatorCatalog, error) {
 	data, err := recipe.GetDataProvider().ReadFile("validators/catalog.yaml")
 	if err != nil {
 		return nil, errors.Wrap(errors.ErrCodeInternal, "failed to read catalog", err)
@@ -115,7 +118,7 @@ func Load(version string) (*ValidatorCatalog, error) {
 	}
 
 	for i := range cat.Validators {
-		cat.Validators[i].Image = ResolveImage(cat.Validators[i].Image, version)
+		cat.Validators[i].Image = ResolveImage(cat.Validators[i].Image, version, commit)
 	}
 
 	return cat, nil
@@ -127,12 +130,16 @@ func Load(version string) (*ValidatorCatalog, error) {
 // inference-perf validator). Applies, in order:
 //
 //  1. :latest tag replacement with version if version is a release (vX.Y.Z).
-//  2. Registry prefix override if AICR_VALIDATOR_IMAGE_REGISTRY is set.
+//  2. If non-release and commit is a valid SHA, :latest → :sha-<commit>.
+//  3. Registry prefix override if AICR_VALIDATOR_IMAGE_REGISTRY is set.
 //
-// Images with explicit version tags are not modified by step 1.
-func ResolveImage(image, version string) string {
+// Images with explicit version tags are not modified by steps 1-2.
+func ResolveImage(image, version, commit string) string {
+	commit = strings.ToLower(commit)
 	if isReleaseVersion(version) {
 		image = replaceLatestTag(image, version)
+	} else if isValidCommit(commit) {
+		image = replaceLatestWithSHA(image, commit)
 	}
 	if override := os.Getenv("AICR_VALIDATOR_IMAGE_REGISTRY"); override != "" {
 		image = replaceRegistry(image, override)
@@ -140,13 +147,16 @@ func ResolveImage(image, version string) string {
 	return image
 }
 
-// isReleaseVersion returns true for semantic version strings (vX.Y.Z),
-// false for dev builds ("dev", "v0.0.0-next", empty).
+// releaseVersionPattern matches strict semantic versions: vX.Y.Z or X.Y.Z
+// with no pre-release suffix. This ensures snapshot strings like
+// v0.0.0-12-gabc1234 or pre-release tags like v1.0.0-rc1 are not treated
+// as releases.
+var releaseVersionPattern = regexp.MustCompile(`^v?\d+\.\d+\.\d+$`)
+
+// isReleaseVersion returns true for strict semantic version strings (vX.Y.Z),
+// false for dev builds, pre-release suffixes, snapshots, and empty strings.
 func isReleaseVersion(version string) bool {
-	if version == "" || version == "dev" || strings.Contains(version, "-next") {
-		return false
-	}
-	return true
+	return releaseVersionPattern.MatchString(version)
 }
 
 // replaceLatestTag replaces :latest with the given version tag.
@@ -160,6 +170,34 @@ func replaceLatestTag(image, version string) string {
 			tag = "v" + tag
 		}
 		return strings.TrimSuffix(image, ":latest") + ":" + tag
+	}
+	return image
+}
+
+// isValidCommit returns true for non-empty strings that look like a git short
+// or full SHA (7-40 hex characters). The sentinel value "unknown" (set by
+// ldflags default) is explicitly rejected.
+func isValidCommit(commit string) bool {
+	if commit == "" || commit == "unknown" {
+		return false
+	}
+	if len(commit) < 7 || len(commit) > 40 {
+		return false
+	}
+	for _, c := range commit {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// replaceLatestWithSHA replaces :latest with :sha-<commit> to match the
+// image tags pushed by the on-push CI workflow.
+// Images with explicit version tags are not modified.
+func replaceLatestWithSHA(image, commit string) string {
+	if strings.HasSuffix(image, ":latest") {
+		return strings.TrimSuffix(image, ":latest") + ":sha-" + commit
 	}
 	return image
 }
