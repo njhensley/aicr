@@ -204,9 +204,7 @@ func validateNcclAllReduceBw(ctx *validators.Context, constraint recipe.Constrai
 	}
 	slog.Info("Target bandwidth threshold", "threshold", threshold, "tolerance", "10%")
 
-	// Determine GPU configuration from cluster. Nodes are already narrowed
-	// to the TrainJob's target set, so WorkerCount / preflight / EFA
-	// discovery / worker placement all operate on the same node set.
+	// Determine GPU configuration from cluster.
 	gpuConfig, err := determineGPUConfig(ctx, service, accelerator)
 	if err != nil {
 		return "", false, aicrErrors.Wrap(aicrErrors.ErrCodeInternal, "failed to determine GPU configuration", err)
@@ -224,9 +222,7 @@ func validateNcclAllReduceBw(ctx *validators.Context, constraint recipe.Constrai
 	// Preflight cluster-side prerequisites before spending TrainJob time.
 	// On GB200/EKS the NET variant needs NVreg_GrdmaPciTopoCheckOverride=1
 	// on the NVIDIA driver; without it, EFA can't attach dma-buf to GPU HBM
-	// and NCCL silently falls back to Socket. gpuConfig.Nodes is already
-	// the target subset (resolveTargetGPUNodes), so the probe won't
-	// false-fail on nodes the workload never touches.
+	// and NCCL silently falls back to Socket.
 	if gb200NetPreflightApplies(variant, accelerator, service) {
 		if pfErr := preflightGB200NetNVregFlag(ctx, gpuConfig.Nodes); pfErr != nil {
 			return "", false, pfErr
@@ -349,11 +345,14 @@ func parseThreshold(value string) (float64, error) {
 	return threshold, nil
 }
 
-// gpuProductLabel is the NVIDIA GPU Feature Discovery node label carrying the
-// concrete GPU product identifier (e.g. "NVIDIA-GB200", "NVIDIA-H100-80GB-HBM3").
-// Set by GFD, which ships as part of the NVIDIA GPU Operator deployed by AICR
-// recipes, so every supported cluster has it on GPU-attached nodes.
-const gpuProductLabel = "nvidia.com/gpu.product"
+// Node label keys consulted by resolveTargetGPUNodes. gpuProductLabel is set
+// by NVIDIA GPU Feature Discovery (part of the GPU Operator deployed by AICR
+// recipes); instanceTypeLabel is the standard Kubernetes instance-type label
+// that platformWorkerScheduling also keys off on EKS.
+const (
+	gpuProductLabel   = "nvidia.com/gpu.product"
+	instanceTypeLabel = "node.kubernetes.io/instance-type"
+)
 
 // acceleratorProductMatchers maps a recipe Criteria.Accelerator to a predicate
 // that reports whether a given nvidia.com/gpu.product label value belongs to
@@ -371,17 +370,16 @@ var acceleratorProductMatchers = map[recipe.CriteriaAcceleratorType]func(string)
 }
 
 // resolveTargetGPUNodes narrows the full schedulable GPU set to the subset
-// the NCCL TrainJob will actually schedule workers onto, along with the
-// effective node selector used to derive that subset. Shared by every
+// the NCCL TrainJob will actually schedule workers onto. Shared by every
 // downstream consumer (WorkerCount / GPU_COUNT sizing, NVreg preflight,
 // EFA discovery, worker podSpec placement) so the TrainJob cannot request
-// more workers than the selector can match.
+// more workers than the worker podSpec's nodeSelector can match.
 //
 // Precedence:
 //  1. override (ctx.NodeSelector — user --node-selector) if non-empty.
 //     Zero-match → hard error naming the override.
 //  2. Filter by nvidia.com/gpu.product ↔ recipe accelerator when a matcher
-//     exists and at least one input node carries the label. This makes
+//     exists and at least one input node carries the label. Makes
 //     accelerator selection deterministic on heterogeneous clusters
 //     (e.g. 2× GB200 + 3× H100 under one EKS control plane) instead of
 //     depending on node list order. Zero-match → hard error naming the
@@ -389,128 +387,104 @@ var acceleratorProductMatchers = map[recipe.CriteriaAcceleratorType]func(string)
 //     operator isn't pointed at a misleading secondary error like the
 //     NVreg preflight failing on H100 nodes.
 //  3. On EKS, further narrow to the first (possibly accelerator-filtered)
-//     node's node.kubernetes.io/instance-type label — same key
-//     platformWorkerScheduling stamps into the worker podSpec, so the
-//     pool is homogeneous in what the pod scheduler will actually match.
-//     Also applies as the sole narrow when the cluster lacks GFD labels,
-//     preserving today's behavior on non-GPU-Operator installs.
+//     node's instance-type — same key platformWorkerScheduling stamps
+//     into the worker podSpec. Also applies as the sole narrow when the
+//     cluster lacks GFD labels, preserving behavior on non-GFD installs.
 //  4. No filter — non-EKS services without a discoverable default
-//     selector key return the accelerator-filtered set as-is. Worker
-//     placement on those services comes from platformWorkerScheduling's
-//     own defaults or the user's override.
+//     selector key return the accelerator-filtered set as-is.
 //
 // Heterogeneous-cluster contract: the GFD-based accelerator filter makes
 // the auto-path correct on mixed accelerator pools. For finer-grained
-// control (e.g. H100 SXM vs PCIe on the same cluster, or pinning to one
-// subnet), the operator should still pass --node-selector. A similar
-// improvement is still open for inference_perf_constraint.go, which
-// currently only honors --node-selector and does not consult gpu.product.
-//
-// The returned selector is the final effective filter — useful for the
-// caller's narrowed-to log line. It reflects the most-specific narrow
-// applied (instance-type on EKS, gpu.product elsewhere, nil when no
-// narrowing applied).
-func resolveTargetGPUNodes(nodes []v1.Node, override map[string]string, service recipe.CriteriaServiceType, accelerator recipe.CriteriaAcceleratorType) ([]v1.Node, map[string]string, error) {
-	// 1. User override wins.
+// control (e.g. forcing a specific subnet or a single instance-type
+// within a family), the operator should still pass --node-selector.
+func resolveTargetGPUNodes(nodes []v1.Node, override map[string]string, service recipe.CriteriaServiceType, accelerator recipe.CriteriaAcceleratorType) ([]v1.Node, error) {
 	if len(override) > 0 {
-		out := filterByLabels(nodes, override)
+		out := nodesMatchingSelector(nodes, override)
 		if len(out) == 0 {
-			return nil, override, aicrErrors.New(aicrErrors.ErrCodeInternal,
+			return nil, aicrErrors.New(aicrErrors.ErrCodeInternal,
 				fmt.Sprintf("--node-selector %v matches zero of %d GPU nodes", override, len(nodes)))
 		}
-		return out, override, nil
+		slog.Info("Narrowed GPU nodes via --node-selector", "selector", override, "matched", len(out), "total", len(nodes))
+		return out, nil
 	}
 
-	// 2. Accelerator-aware narrowing via GFD's nvidia.com/gpu.product.
-	//    Skip when the accelerator has no matcher (e.g. CriteriaAcceleratorAny)
-	//    or when no input node carries the label (non-GFD install) — degrade
-	//    to the EKS instance-type heuristic below rather than erroring.
-	working := nodes
-	productSelector := ""
-	if matcher, ok := acceleratorProductMatchers[accelerator]; ok && anyNodeHasLabel(nodes, gpuProductLabel) {
-		filtered, seen := filterByGPUProduct(nodes, matcher)
-		if len(filtered) == 0 {
-			return nil, map[string]string{gpuProductLabel: "<" + string(accelerator) + ">"},
-				aicrErrors.New(aicrErrors.ErrCodeInternal,
-					fmt.Sprintf("no schedulable GPU nodes match recipe accelerator %q (products seen: %v)", accelerator, seen))
-		}
-		working = filtered
-		// Record for the selector we return when EKS narrow doesn't fire.
-		productSelector = filtered[0].Labels[gpuProductLabel]
-		if len(filtered) < len(nodes) {
-			slog.Info("Narrowed GPU nodes by accelerator via nvidia.com/gpu.product",
-				"accelerator", accelerator, "matched", len(filtered), "total", len(nodes))
-		}
+	working, err := narrowByAccelerator(nodes, accelerator)
+	if err != nil {
+		return nil, err
 	}
 
-	// 3. On EKS, narrow further to a single instance-type so the worker
-	//    podSpec's platformWorkerScheduling selector matches every node in
-	//    the returned set.
-	if service == recipe.CriteriaServiceEKS && len(working) > 0 {
-		if it := working[0].Labels["node.kubernetes.io/instance-type"]; it != "" {
-			selector := map[string]string{"node.kubernetes.io/instance-type": it}
-			out := filterByLabels(working, selector)
-			if len(out) == 0 {
-				// Unreachable in practice — working[0] matches itself — but
-				// guard against empty-input paths producing an empty slice
-				// with a non-nil selector.
-				return nil, selector, aicrErrors.New(aicrErrors.ErrCodeInternal,
-					fmt.Sprintf("instance-type narrow %v matches zero of %d nodes after accelerator filter", selector, len(working)))
-			}
-			return out, selector, nil
-		}
+	if out, narrowed := narrowByInstanceType(working, service); narrowed {
+		return out, nil
 	}
-
-	// 4. Non-EKS or EKS first node missing instance-type label.
-	if productSelector != "" {
-		return working, map[string]string{gpuProductLabel: productSelector}, nil
-	}
-	return working, nil, nil
+	return working, nil
 }
 
-// filterByLabels returns the subset of nodes whose Labels match every
-// key=value pair in selector. An empty selector returns the input unchanged.
-func filterByLabels(nodes []v1.Node, selector map[string]string) []v1.Node {
-	if len(selector) == 0 {
-		return nodes
+// narrowByAccelerator filters nodes by the recipe's accelerator → gpu.product
+// mapping when both a matcher exists and the cluster carries GFD labels.
+// Returns the input unchanged when either condition fails (e.g. accelerator=any,
+// or a non-GFD install) so the caller can fall back to a later narrowing step.
+// Zero matches after an attempted filter is an error, not a fallback — the
+// recipe explicitly asked for an accelerator the cluster doesn't provide.
+func narrowByAccelerator(nodes []v1.Node, accelerator recipe.CriteriaAcceleratorType) ([]v1.Node, error) {
+	matcher, ok := acceleratorProductMatchers[accelerator]
+	if !ok || !anyNodeHasLabel(nodes, gpuProductLabel) {
+		return nodes, nil
 	}
-	out := make([]v1.Node, 0, len(nodes))
+	matched := make([]v1.Node, 0, len(nodes))
 	for _, n := range nodes {
-		match := true
-		for k, v := range selector {
-			if n.Labels[k] != v {
-				match = false
-				break
-			}
-		}
-		if match {
-			out = append(out, n)
-		}
-	}
-	return out
-}
-
-// filterByGPUProduct returns the subset of nodes whose gpu.product label
-// satisfies the matcher, along with the sorted unique product values observed
-// across the full input (for diagnostics when nothing matches).
-func filterByGPUProduct(nodes []v1.Node, matcher func(string) bool) (matched []v1.Node, productsSeen []string) {
-	seenSet := map[string]struct{}{}
-	matched = make([]v1.Node, 0, len(nodes))
-	for _, n := range nodes {
-		p := n.Labels[gpuProductLabel]
-		if p != "" {
-			seenSet[p] = struct{}{}
-		}
-		if matcher(p) {
+		if matcher(n.Labels[gpuProductLabel]) {
 			matched = append(matched, n)
 		}
 	}
-	productsSeen = make([]string, 0, len(seenSet))
-	for p := range seenSet {
-		productsSeen = append(productsSeen, p)
+	if len(matched) == 0 {
+		return nil, aicrErrors.New(aicrErrors.ErrCodeInternal,
+			fmt.Sprintf("no schedulable GPU nodes match recipe accelerator %q (products seen: %v)", accelerator, uniqueGPUProducts(nodes)))
 	}
-	sort.Strings(productsSeen)
-	return matched, productsSeen
+	if len(matched) < len(nodes) {
+		slog.Info("Narrowed GPU nodes by accelerator via nvidia.com/gpu.product",
+			"accelerator", accelerator, "matched", len(matched), "total", len(nodes))
+	}
+	return matched, nil
+}
+
+// narrowByInstanceType applies the EKS-only instance-type narrow so the
+// worker podSpec's platformWorkerScheduling selector matches every returned
+// node. Returns (nodes, false) when not applicable (non-EKS, empty input, or
+// first node missing the label — e.g. a non-AWS control plane mis-tagged as
+// EKS in the recipe), letting the caller fall through.
+func narrowByInstanceType(nodes []v1.Node, service recipe.CriteriaServiceType) ([]v1.Node, bool) {
+	if service != recipe.CriteriaServiceEKS || len(nodes) == 0 {
+		return nodes, false
+	}
+	it := nodes[0].Labels[instanceTypeLabel]
+	if it == "" {
+		return nodes, false
+	}
+	selector := map[string]string{instanceTypeLabel: it}
+	out := nodesMatchingSelector(nodes, selector)
+	// out is guaranteed non-empty: nodes[0] matches itself.
+	if len(out) < len(nodes) {
+		slog.Info("Narrowed GPU nodes by instance-type", "selector", selector, "matched", len(out), "total", len(nodes))
+	}
+	return out, true
+}
+
+// uniqueGPUProducts returns the sorted set of non-empty gpu.product label
+// values observed across nodes. Used only for the zero-match diagnostic in
+// narrowByAccelerator; happy paths skip the sort.
+func uniqueGPUProducts(nodes []v1.Node) []string {
+	seen := map[string]struct{}{}
+	for _, n := range nodes {
+		if p := n.Labels[gpuProductLabel]; p != "" {
+			seen[p] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for p := range seen {
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // anyNodeHasLabel reports whether at least one node carries a non-empty value
@@ -532,29 +506,18 @@ func anyNodeHasLabel(nodes []v1.Node, key string) bool {
 func determineGPUConfig(ctx *validators.Context, service recipe.CriteriaServiceType, accelerator recipe.CriteriaAcceleratorType) (*gpuConfiguration, error) {
 	slog.Info("Analyzing GPU node configuration...")
 
-	// Find schedulable GPU nodes
 	gpuNodes, err := helper.FindSchedulableGpuNodes(ctx.Ctx, ctx.Clientset)
 	if err != nil {
 		return nil, aicrErrors.Wrap(aicrErrors.ErrCodeInternal, "failed to find GPU nodes", err)
 	}
-
 	if len(gpuNodes) == 0 {
 		return nil, aicrErrors.New(aicrErrors.ErrCodeInternal, "no schedulable GPU nodes found")
 	}
-
 	slog.Info("Found GPU nodes", "count", len(gpuNodes))
 
-	// Narrow to the subset the TrainJob will actually schedule onto. On
-	// mixed-accelerator or mixed-instance-type clusters this keeps
-	// WORKER_COUNT from overshooting the worker podSpec's match set and
-	// leaving workers Pending.
-	targetNodes, selector, err := resolveTargetGPUNodes(gpuNodes, ctx.NodeSelector, service, accelerator)
+	targetNodes, err := resolveTargetGPUNodes(gpuNodes, ctx.NodeSelector, service, accelerator)
 	if err != nil {
 		return nil, err
-	}
-	if len(selector) > 0 && len(targetNodes) < len(gpuNodes) {
-		slog.Info("Narrowed GPU nodes to TrainJob target set",
-			"selector", selector, "total", len(gpuNodes), "target", len(targetNodes))
 	}
 
 	// Get GPU count from first target node (assuming homogeneous target set)

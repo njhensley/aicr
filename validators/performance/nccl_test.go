@@ -233,124 +233,114 @@ func TestResolveTargetGPUNodes(t *testing.T) {
 	unlabeled := mkNode("bare", nil)
 
 	tests := []struct {
-		name         string
-		nodes        []corev1.Node
-		override     map[string]string
-		service      recipe.CriteriaServiceType
-		accelerator  recipe.CriteriaAcceleratorType
-		wantNames    []string // ordered node names in the result
-		wantSelector map[string]string
-		wantErr      bool
+		name        string
+		nodes       []corev1.Node
+		override    map[string]string
+		service     recipe.CriteriaServiceType
+		accelerator recipe.CriteriaAcceleratorType
+		wantNames   []string
+		wantErr     bool
+		wantErrSub  string // substring that must appear in err.Error() when wantErr
 	}{
 		{
-			name:         "mixed accelerators — gpu.product filter deterministically picks GB200 regardless of list order",
-			nodes:        []corev1.Node{h100a, gb200a, h100b, gb200b}, // H100 listed first
-			service:      recipe.CriteriaServiceEKS,
-			accelerator:  recipe.CriteriaAcceleratorGB200,
-			wantNames:    []string{"gb200-a", "gb200-b"},
-			wantSelector: map[string]string{"node.kubernetes.io/instance-type": "p6e-gb200.36xlarge"},
+			name:        "mixed accelerators — gpu.product filter deterministically picks GB200 regardless of list order",
+			nodes:       []corev1.Node{h100a, gb200a, h100b, gb200b}, // H100 listed first
+			service:     recipe.CriteriaServiceEKS,
+			accelerator: recipe.CriteriaAcceleratorGB200,
+			wantNames:   []string{"gb200-a", "gb200-b"},
 		},
 		{
-			name:         "H100 recipe on H100 cluster — GFD matches H100 family (prefix)",
-			nodes:        []corev1.Node{h100a, h100b},
-			service:      recipe.CriteriaServiceEKS,
-			accelerator:  recipe.CriteriaAcceleratorH100,
-			wantNames:    []string{"h100-a", "h100-b"},
-			wantSelector: map[string]string{"node.kubernetes.io/instance-type": "p5.48xlarge"},
+			name:        "H100 recipe on H100 cluster — GFD matches H100 family (prefix)",
+			nodes:       []corev1.Node{h100a, h100b},
+			service:     recipe.CriteriaServiceEKS,
+			accelerator: recipe.CriteriaAcceleratorH100,
+			wantNames:   []string{"h100-a", "h100-b"},
 		},
 		{
-			name:         "H100 SXM + H100 PCIe — gpu.product narrows to both, EKS instance-type narrow picks one",
-			nodes:        []corev1.Node{h100a, h100pcie, h100b},
-			service:      recipe.CriteriaServiceEKS,
-			accelerator:  recipe.CriteriaAcceleratorH100,
-			wantNames:    []string{"h100-a", "h100-b"}, // first-filtered instance-type wins
-			wantSelector: map[string]string{"node.kubernetes.io/instance-type": "p5.48xlarge"},
+			name:        "H100 SXM + H100 PCIe — gpu.product narrows to both, EKS instance-type narrow picks one",
+			nodes:       []corev1.Node{h100a, h100pcie, h100b},
+			service:     recipe.CriteriaServiceEKS,
+			accelerator: recipe.CriteriaAcceleratorH100,
+			wantNames:   []string{"h100-a", "h100-b"},
 		},
 		{
-			name:         "accelerator mismatch — zero match returns diagnostic error with products seen",
-			nodes:        []corev1.Node{h100a, h100b},
-			service:      recipe.CriteriaServiceEKS,
-			accelerator:  recipe.CriteriaAcceleratorGB200,
-			wantSelector: map[string]string{"nvidia.com/gpu.product": "<gb200>"},
-			wantErr:      true,
+			name:        "accelerator mismatch — zero match returns diagnostic error with products seen",
+			nodes:       []corev1.Node{h100a, h100b},
+			service:     recipe.CriteriaServiceEKS,
+			accelerator: recipe.CriteriaAcceleratorGB200,
+			wantErr:     true,
+			wantErrSub:  `recipe accelerator "gb200"`,
 		},
 		{
-			name:         "non-GFD cluster — gpu.product absent, fall back to EKS instance-type heuristic",
-			nodes:        []corev1.Node{gb200noGFD, h100noGFD},
-			service:      recipe.CriteriaServiceEKS,
-			accelerator:  recipe.CriteriaAcceleratorGB200,
-			wantNames:    []string{"gb200-nogfd"},
-			wantSelector: map[string]string{"node.kubernetes.io/instance-type": "p6e-gb200.36xlarge"},
+			name:        "non-GFD cluster — gpu.product absent, fall back to EKS instance-type heuristic",
+			nodes:       []corev1.Node{gb200noGFD, h100noGFD},
+			service:     recipe.CriteriaServiceEKS,
+			accelerator: recipe.CriteriaAcceleratorGB200,
+			wantNames:   []string{"gb200-nogfd"},
 		},
 		{
-			name:         "user override wins over accelerator filter",
-			nodes:        []corev1.Node{gb200a, gb200b, h100a},
-			override:     map[string]string{"gpu-pool": "h100"},
-			service:      recipe.CriteriaServiceEKS,
-			accelerator:  recipe.CriteriaAcceleratorGB200, // ignored due to override
-			wantNames:    []string{"h100-a"},
-			wantSelector: map[string]string{"gpu-pool": "h100"},
+			name:        "user override wins over accelerator filter",
+			nodes:       []corev1.Node{gb200a, gb200b, h100a},
+			override:    map[string]string{"gpu-pool": "h100"},
+			service:     recipe.CriteriaServiceEKS,
+			accelerator: recipe.CriteriaAcceleratorGB200, // ignored due to override
+			wantNames:   []string{"h100-a"},
 		},
 		{
-			name:         "override matches zero — hard error with override in result",
-			nodes:        []corev1.Node{gb200a, gb200b},
-			override:     map[string]string{"gpu-pool": "h100"},
-			service:      recipe.CriteriaServiceEKS,
-			accelerator:  recipe.CriteriaAcceleratorGB200,
-			wantSelector: map[string]string{"gpu-pool": "h100"},
-			wantErr:      true,
+			name:        "override matches zero — hard error naming the override",
+			nodes:       []corev1.Node{gb200a, gb200b},
+			override:    map[string]string{"gpu-pool": "h100"},
+			service:     recipe.CriteriaServiceEKS,
+			accelerator: recipe.CriteriaAcceleratorGB200,
+			wantErr:     true,
+			wantErrSub:  "--node-selector",
 		},
 		{
-			name:         "accelerator=any — matcher skipped, EKS instance-type heuristic applies",
-			nodes:        []corev1.Node{gb200a, gb200b, h100a},
-			service:      recipe.CriteriaServiceEKS,
-			accelerator:  recipe.CriteriaAcceleratorAny,
-			wantNames:    []string{"gb200-a", "gb200-b"}, // first-node instance-type
-			wantSelector: map[string]string{"node.kubernetes.io/instance-type": "p6e-gb200.36xlarge"},
+			name:        "accelerator=any — matcher skipped, EKS instance-type heuristic applies",
+			nodes:       []corev1.Node{gb200a, gb200b, h100a},
+			service:     recipe.CriteriaServiceEKS,
+			accelerator: recipe.CriteriaAcceleratorAny,
+			wantNames:   []string{"gb200-a", "gb200-b"},
 		},
 		{
-			name:         "non-EKS + GFD — accelerator filter applies, no further narrow",
-			nodes:        []corev1.Node{gb200a, h100a, gb200b},
-			service:      recipe.CriteriaServiceOKE,
-			accelerator:  recipe.CriteriaAcceleratorGB200,
-			wantNames:    []string{"gb200-a", "gb200-b"},
-			wantSelector: map[string]string{"nvidia.com/gpu.product": "NVIDIA-GB200"},
+			name:        "non-EKS + GFD — accelerator filter applies, no further narrow",
+			nodes:       []corev1.Node{gb200a, h100a, gb200b},
+			service:     recipe.CriteriaServiceOKE,
+			accelerator: recipe.CriteriaAcceleratorGB200,
+			wantNames:   []string{"gb200-a", "gb200-b"},
 		},
 		{
-			name:         "non-EKS + no GFD + no override — returns all, no selector",
-			nodes:        []corev1.Node{gb200noGFD, h100noGFD},
-			service:      recipe.CriteriaServiceOKE,
-			accelerator:  recipe.CriteriaAcceleratorGB200,
-			wantNames:    []string{"gb200-nogfd", "h100-nogfd"},
-			wantSelector: nil,
+			name:        "non-EKS + no GFD + no override — returns all",
+			nodes:       []corev1.Node{gb200noGFD, h100noGFD},
+			service:     recipe.CriteriaServiceOKE,
+			accelerator: recipe.CriteriaAcceleratorGB200,
+			wantNames:   []string{"gb200-nogfd", "h100-nogfd"},
 		},
 		{
-			name:         "EKS first node missing instance-type label on non-GFD cluster — returns all, no selector",
-			nodes:        []corev1.Node{unlabeled, gb200noGFD},
-			service:      recipe.CriteriaServiceEKS,
-			accelerator:  recipe.CriteriaAcceleratorGB200,
-			wantNames:    []string{"bare", "gb200-nogfd"},
-			wantSelector: nil,
+			name:        "EKS first node missing instance-type label on non-GFD cluster — returns all",
+			nodes:       []corev1.Node{unlabeled, gb200noGFD},
+			service:     recipe.CriteriaServiceEKS,
+			accelerator: recipe.CriteriaAcceleratorGB200,
+			wantNames:   []string{"bare", "gb200-nogfd"},
 		},
 		{
-			name:         "empty input, no override",
-			nodes:        nil,
-			service:      recipe.CriteriaServiceEKS,
-			accelerator:  recipe.CriteriaAcceleratorGB200,
-			wantNames:    nil,
-			wantSelector: nil,
+			name:        "empty input",
+			nodes:       nil,
+			service:     recipe.CriteriaServiceEKS,
+			accelerator: recipe.CriteriaAcceleratorGB200,
+			wantNames:   nil,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, gotSelector, err := resolveTargetGPUNodes(tt.nodes, tt.override, tt.service, tt.accelerator)
+			got, err := resolveTargetGPUNodes(tt.nodes, tt.override, tt.service, tt.accelerator)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("resolveTargetGPUNodes() err = %v, wantErr = %v", err, tt.wantErr)
 			}
-			if !reflect.DeepEqual(gotSelector, tt.wantSelector) {
-				t.Errorf("selector = %v, want %v", gotSelector, tt.wantSelector)
-			}
 			if tt.wantErr {
+				if tt.wantErrSub != "" && !strings.Contains(err.Error(), tt.wantErrSub) {
+					t.Errorf("err = %q, want substring %q", err.Error(), tt.wantErrSub)
+				}
 				return
 			}
 			var gotNames []string
