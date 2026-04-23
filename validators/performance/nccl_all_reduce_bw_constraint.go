@@ -538,12 +538,41 @@ func buildComputeDomain(namespace string) *unstructured.Unstructured {
 	}}
 }
 
-// applyNCCLComputeDomain creates the ComputeDomain CR that backs the NVLS
-// variant's IMEX channel access. The DRA driver reconciles it into a
-// ResourceClaimTemplate with the same name as spec.channel.resourceClaimTemplate.name.
+// applyNCCLComputeDomain creates (or updates) the ComputeDomain CR that
+// backs the NVLS variant's IMEX channel access. The DRA driver reconciles
+// it into a ResourceClaimTemplate with the same name as
+// spec.channel.resourceClaimTemplate.name. Idempotent across reruns: if a
+// ComputeDomain with the fixed name already exists (e.g., prior run
+// SIGKILL'd before cleanup ran), the spec is updated in place rather than
+// failing with AlreadyExists.
 func applyNCCLComputeDomain(ctx context.Context, dynamicClient dynamic.Interface, namespace string) error {
 	slog.Info("Applying ComputeDomain for NVLS/IMEX access", "namespace", namespace, "name", ncclComputeDomainName)
-	return createUnstructured(ctx, dynamicClient, computeDomainGVR, namespace, buildComputeDomain(namespace))
+
+	applyCtx, cancel := context.WithTimeout(ctx, defaults.DiagnosticTimeout)
+	defer cancel()
+
+	client := dynamicClient.Resource(computeDomainGVR).Namespace(namespace)
+	desired := buildComputeDomain(namespace)
+
+	if _, err := client.Create(applyCtx, desired, metav1.CreateOptions{}); err == nil {
+		return nil
+	} else if !apierrors.IsAlreadyExists(err) {
+		return aicrErrors.Wrap(aicrErrors.ErrCodeInternal, "failed to create ComputeDomain", err)
+	}
+
+	// AlreadyExists: fetch the current resourceVersion and Update in place.
+	// Required because Update rejects an empty resourceVersion to prevent
+	// lost updates.
+	existing, err := client.Get(applyCtx, ncclComputeDomainName, metav1.GetOptions{})
+	if err != nil {
+		return aicrErrors.Wrap(aicrErrors.ErrCodeInternal, "failed to get existing ComputeDomain", err)
+	}
+	desired.SetResourceVersion(existing.GetResourceVersion())
+	if _, err := client.Update(applyCtx, desired, metav1.UpdateOptions{}); err != nil {
+		return aicrErrors.Wrap(aicrErrors.ErrCodeInternal, "failed to update ComputeDomain", err)
+	}
+	slog.Info("Updated existing ComputeDomain in place", "name", ncclComputeDomainName)
+	return nil
 }
 
 // waitForIMEXClaimTemplate waits until the DRA driver has reconciled the
