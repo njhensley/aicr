@@ -61,11 +61,6 @@ const (
 	// larger clusters.
 	preflightNodeConcurrency = 16
 
-	// preflightCleanupTimeout bounds the best-effort probe-pod delete in
-	// the deferred cleanup path, which runs with context.Background() so it
-	// still fires after the parent context has been canceled.
-	preflightCleanupTimeout = 30 * time.Second
-
 	// preflightPodNamePrefix is the generateName seed for the per-node probe
 	// pods. Short so the full name (including node hash + rand suffix) fits
 	// inside the 63-character DNS-1123 label limit on all realistic node
@@ -199,7 +194,7 @@ func checkNVregOnNode(ctx context.Context, clientset kubernetes.Interface, names
 	// Cleanup runs on an independent context so it fires even when the
 	// probe context has been canceled (timeout, parallel-sibling error).
 	defer func() { //nolint:contextcheck // Fresh context: parent may be canceled during cleanup
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), preflightCleanupTimeout)
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), defaults.PreflightCleanupTimeout)
 		defer cancel()
 		if delErr := podsClient.Delete(cleanupCtx, created.Name, metav1.DeleteOptions{}); delErr != nil && !apierrors.IsNotFound(delErr) {
 			slog.Warn("failed to delete NVreg preflight pod", "pod", created.Name, "err", delErr)
