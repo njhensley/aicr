@@ -205,10 +205,19 @@ func (d *Deployer) buildApplyConfig() *applybatchv1.JobApplyConfiguration {
 		)
 }
 
+// orchestratorEnvMax upper-bounds the env vars buildEnvApply injects
+// before appending the catalog entry's own Env slice. Used only as a
+// capacity hint for the backing slice — append() resizes on overflow.
+// Breakdown: 7 always-injected (SNAPSHOT_PATH, RECIPE_PATH, VALIDATOR_NAME,
+// VALIDATOR_PHASE, RUN_ID, NAMESPACE, CHECK_TIMEOUT) plus up to 5
+// conditionally-injected (NODE_SELECTOR, TOLERATIONS, CLI_VERSION,
+// CLI_COMMIT, VALIDATOR_IMAGE_REGISTRY). Bump in lockstep when the
+// injection list changes.
+const orchestratorEnvMax = 12
+
 func (d *Deployer) buildEnvApply() []*applycorev1.EnvVarApplyConfiguration {
-	orchestratorEnvCount := 8
 	timeout := d.resolvedTimeout()
-	env := make([]*applycorev1.EnvVarApplyConfiguration, 0, orchestratorEnvCount+len(d.entry.Env))
+	env := make([]*applycorev1.EnvVarApplyConfiguration, 0, orchestratorEnvMax+len(d.entry.Env))
 	env = append(env,
 		applycorev1.EnvVar().WithName("AICR_SNAPSHOT_PATH").WithValue("/data/snapshot/snapshot.yaml"),
 		applycorev1.EnvVar().WithName("AICR_RECIPE_PATH").WithValue("/data/recipe/recipe.yaml"),
