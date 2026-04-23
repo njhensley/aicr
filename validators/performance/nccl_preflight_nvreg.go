@@ -300,3 +300,35 @@ func gb200NetPreflightApplies(variant ncclVariant, accelerator recipe.CriteriaAc
 		accelerator == recipe.CriteriaAcceleratorGB200 &&
 		service == recipe.CriteriaServiceEKS
 }
+
+// filterPreflightNodes returns the subset of GPU nodes the TrainJob would
+// actually schedule workers onto, mirroring applyNCCLResources' effective
+// selector: user override via ctx.NodeSelector wins; else on EKS the first
+// node's instance-type label is used (platformWorkerScheduling's EKS path);
+// other services fall back to "probe all" because their selector keys aren't
+// carried on the Node.
+func filterPreflightNodes(nodes []corev1.Node, override map[string]string, service recipe.CriteriaServiceType) []corev1.Node {
+	selector := override
+	if len(selector) == 0 && service == recipe.CriteriaServiceEKS && len(nodes) > 0 {
+		if it := nodes[0].Labels["node.kubernetes.io/instance-type"]; it != "" {
+			selector = map[string]string{"node.kubernetes.io/instance-type": it}
+		}
+	}
+	if len(selector) == 0 {
+		return nodes
+	}
+	out := make([]corev1.Node, 0, len(nodes))
+	for _, n := range nodes {
+		match := true
+		for k, v := range selector {
+			if n.Labels[k] != v {
+				match = false
+				break
+			}
+		}
+		if match {
+			out = append(out, n)
+		}
+	}
+	return out
+}

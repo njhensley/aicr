@@ -223,7 +223,13 @@ func validateNcclAllReduceBw(ctx *validators.Context, constraint recipe.Constrai
 	// on the NVIDIA driver; without it, EFA can't attach dma-buf to GPU HBM
 	// and NCCL silently falls back to Socket.
 	if gb200NetPreflightApplies(variant, accelerator, service) {
-		if pfErr := preflightGB200NetNVregFlag(ctx, gpuConfig.Nodes); pfErr != nil {
+		// Probe only nodes the TrainJob would actually schedule on. On
+		// mixed-instance EKS clusters (p6e-gb200 + p5-h100, etc.) a
+		// gpu-operator ClusterPolicy with node affinity may ship the NVreg
+		// flag to the GB200 subset only; probing every GPU node would
+		// false-fail on nodes the workload never touches.
+		targetNodes := filterPreflightNodes(gpuConfig.Nodes, ctx.NodeSelector, service)
+		if pfErr := preflightGB200NetNVregFlag(ctx, targetNodes); pfErr != nil {
 			return "", false, pfErr
 		}
 	}
