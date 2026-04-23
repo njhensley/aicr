@@ -33,7 +33,10 @@ spec:
       value: ">= 1.32.4"
 
   componentRefs:
-    # GB200-specific GPU Operator overrides (inherits valuesFile from eks-training)
+    # GB200+EKS GPU Operator prerequisites. Keep in sync with the same block
+    # in gb200-eks-inference.yaml — the mixin system can't extend componentRefs
+    # already declared in the inheritance chain (gpu-operator comes from
+    # eks-training / eks-inference), so this lives per-leaf for now.
     - name: gpu-operator
       type: Helm
       manifestFiles:
