@@ -155,7 +155,7 @@ jobs:
             const newUrl = issueFilter(`is:issue is:open created:>=${sinceDate}`);
             const closedUrl = issueFilter(`is:issue is:closed closed:>=${sinceDate}`);
             lines.push(
-              `${link(openUrl, `*${total}*`)} open  ·  ${link(newUrl, `+${newToday}`)} new  ·  ${link(closedUrl, closedToday)} closed (24h)`,
+              `${link(openUrl, `*${total}*`)} open, ${link(newUrl, `+${newToday}`)} new, ${link(closedUrl, closedToday)} closed (24h)`,
             );
 
             // Type breakdown
@@ -164,7 +164,7 @@ jobs:
                 const url = issueFilter(`is:issue is:open label:${l}`);
                 return `${l}: ${link(url, c)}`;
               });
-              lines.push(`_By type:_ ${typeParts.join(' · ')}`);
+              lines.push(`_By type:_ ${typeParts.join(', ')}`);
             }
 
             // Priority breakdown
@@ -176,7 +176,7 @@ jobs:
               const noPriUrl = issueFilter('is:issue is:open -label:P0 -label:P1 -label:P2');
               priParts.push(`none: ${link(noPriUrl, noPriority)}`);
             }
-            lines.push(`_By priority:_ ${priParts.join(' · ')}`);
+            lines.push(`_By priority:_ ${priParts.join(', ')}`);
 
             // Flags row (triage + unassigned, only when non-zero)
             const flags = [];
@@ -188,7 +188,7 @@ jobs:
               const unownedUrl = issueFilter('is:issue is:open no:assignee label:P0 label:P1');
               flags.push(`Unowned P0/P1: ${link(unownedUrl, `*${unassigned}*`)}`);
             }
-            if (flags.length > 0) lines.push(flags.join(' · '));
+            if (flags.length > 0) lines.push(flags.join(', '));
 
             // SLA breaches
             if (breaches.length > 0) {
