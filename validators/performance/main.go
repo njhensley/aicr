@@ -31,5 +31,6 @@ func main() {
 		"nccl-all-reduce-bw":      checkNCCLAllReduceBW,
 		"nccl-all-reduce-bw-net":  checkNCCLAllReduceBWNET,
 		"nccl-all-reduce-bw-nvls": checkNCCLAllReduceBWNVLS,
+		"inference-perf":     checkInferencePerf,
 	})
 }
