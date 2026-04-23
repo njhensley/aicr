@@ -103,9 +103,12 @@ spec:
                   - LD_LIBRARY_PATH
                   - -x
                   - PATH
-                  # INFO emits "NVLS multicast support is available" and
-                  # "[send] via NVLS" channel-assignment lines that
-                  # verifyTransportFromLogs parses.
+                  # INFO emits the "NVLS multicast support is available"
+                  # hardware-capability banner and, when NCCL actually builds
+                  # an NVLS communicator, a "NVLS comm 0x<addr>" init line.
+                  # verifyTransportFromLogs greps the latter as proof of use
+                  # (per-channel "[send] via NVLS" lines were dropped in
+                  # NCCL 2.27).
                   - -x
                   - NCCL_DEBUG=INFO
                   # Force MNNVL/NVLS on. If the IMEX domain isn't wired up,

@@ -104,8 +104,11 @@ spec:
                   - LD_LIBRARY_PATH
                   - -x
                   - PATH
-                  # INFO (not WARN) so "Using network ..." and "[send] via NET/..."
-                  # banners appear in launcher logs for verifyTransportFromLogs.
+                  # INFO (not WARN) so the "NCCL INFO Using network <plugin>"
+                  # bootstrap banner appears in launcher logs — that's the
+                  # line verifyTransportFromLogs greps to confirm EFA carried
+                  # traffic on this variant (per-channel "[send] via NET/..."
+                  # lines were dropped in NCCL 2.27).
                   - -x
                   - NCCL_DEBUG=INFO
                   # Force NCCL onto the NET transport (EFA). Disable every NVLink
