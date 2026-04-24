@@ -24,8 +24,10 @@ The following components are included (deployed in order):
 {{ range .Components -}}
 {{ if .IsKustomize -}}
 | {{ .Name }} | Kustomize | {{ .Tag }} | {{ .Namespace }} | {{ .Repository }} ({{ .Path }}) |
-{{ else -}}
+{{ else if .HasChart -}}
 | {{ .Name }} | Helm | {{ .Version }} | {{ .Namespace }} | {{ .ChartName }} ({{ .Repository }}) |
+{{ else -}}
+| {{ .Name }} | Manifests | | {{ .Namespace }} | |
 {{ end -}}
 {{ end }}
 
@@ -71,7 +73,7 @@ kubectl create namespace {{ .Namespace }} --dry-run=client -o yaml | kubectl app
 kustomize build '{{ .Repository }}//{{ .Path }}{{ if .Tag }}?ref={{ .Tag }}{{ end }}' \
   | kubectl apply -n {{ .Namespace }} -f -
 ```
-{{ else -}}
+{{ else if .HasChart -}}
 ```bash
 {{ if .IsOCI -}}
 helm upgrade --install {{ .Name }} {{ .Repository }}/{{ .ChartName }} \
