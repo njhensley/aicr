@@ -20,7 +20,7 @@
 # to roll forward. Consumers pin to a specific aiperf-bench:<semver> tag or
 # let :latest track the CLI version via catalog.Load rewriting.
 
-FROM python:3-slim
+FROM nvcr.io/nvidia/distroless/python:3.13-v4.0.4-dev
 
 ARG AIPERF_VERSION=0.7.0
 
