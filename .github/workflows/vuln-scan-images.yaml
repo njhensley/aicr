@@ -79,21 +79,20 @@ jobs:
             --bare \
             --platform=linux/amd64,linux/arm64 \
             --image-label="org.opencontainers.image.revision=${{ github.sha }}" \
-            --tags="${SCAN_TAG}" \
-            --base-image="nvcr.io/nvidia/cuda:13.2.1-runtime-ubuntu24.04"
+            --tags="${SCAN_TAG}"
 
       - name: Build and push aicrd
         env:
           GOFLAGS: -mod=vendor
           KO_DOCKER_REPO: ghcr.io/nvidia/aicrd
+          KO_DEFAULTBASEIMAGE: gcr.io/distroless/static:nonroot
         run: |
           set -euo pipefail
           ko build ./cmd/aicrd \
             --bare \
             --platform=linux/amd64,linux/arm64 \
             --image-label="org.opencontainers.image.revision=${{ github.sha }}" \
-            --tags="${SCAN_TAG}" \
-            --base-image="gcr.io/distroless/static:nonroot"
+            --tags="${SCAN_TAG}"
 
   # =============================================================================
   # Build Docker Validator Images
