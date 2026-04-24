@@ -521,9 +521,9 @@ aicr validate \
 │    ├─ NVSentinel                                       │
 │    │  └─ values map → values.yaml                      │
 │    │                                                   │
-│    └─ Skyhook                                          │
+│    └─ Nodewright                                       │
 │       ├─ values map → values.yaml                      │
-│       └─ values map → skyhook-cr.yaml                  │
+│       └─ values map → nodewright-cr.yaml               │
 │                                                        │
 │  ┌────────▼────────┐                                   │
 │  │ Template Engine │ (go:embed templates)              │
