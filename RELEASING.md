@@ -4,13 +4,13 @@ This document describes when, why, and how AICR releases are made. For contribut
 
 ## Cadence
 
-Releases follow a **bi-weekly cadence**, aligned with sprint boundaries. A new release is cut at the conclusion of each 2-week sprint.
+Releases follow a **bi-weekly cadence**. A new release is cut every two weeks.
 
 | Release Type | When | Version Bump | Decision |
 |-------------|------|-------------|----------|
-| Sprint release | End of each 2-week sprint | `patch` or `minor` | Maintainer determines bump type based on changes landed |
-| Hotfix | Between sprints, as needed | `patch` | Any maintainer can initiate for critical fixes |
-| Pre-release | Before sprint release, as needed | `rc` or `beta` | Any maintainer can create for testing |
+| Regular release | Every two weeks | `patch` or `minor` | Maintainer determines bump type based on changes landed |
+| Hotfix | Between regular releases, as needed | `patch` | Any maintainer can initiate for critical fixes |
+| Pre-release | Before a regular release, as needed | `rc` or `beta` | Any maintainer can create for testing |
 | Major | Planned | `major` | Requires team agreement and advance communication |
 
 ## What Goes Into a Release
@@ -20,7 +20,7 @@ A release includes everything merged to `main` since the last tag. There is no c
 **Before cutting a release, verify:**
 
 - All CI checks pass on `main` (`make qualify`)
-- No known regressions from the current sprint
+- No known regressions since the last release
 - Breaking changes use `feat!:` or `fix!:` commit prefix (drives changelog and signals consumers)
 
 ## Quality Gates
@@ -91,7 +91,7 @@ To rebuild artifacts from an existing tag without creating a new one: **Actions*
 
 ## Hotfix Procedure
 
-For critical fixes between sprints:
+For critical fixes between regular releases:
 
 1. Fix on `main` first (PR, review, merge as normal)
 2. Cut a patch release: `make bump-patch`
@@ -123,6 +123,15 @@ Published to GitHub Container Registry (`ghcr.io/nvidia/`):
 | `aicr` | `nvcr.io/nvidia/cuda:13.1.0-runtime-ubuntu24.04` | CLI with CUDA runtime |
 | `aicrd` | `gcr.io/distroless/static:nonroot` | Minimal API server |
 
+Published to GitHub Container Registry (`ghcr.io/nvidia/aicr-validators/`):
+
+| Image | Base | Description |
+|-------|------|-------------|
+| `deployment` | `gcr.io/distroless/static-debian12:nonroot` | Deployment validator |
+| `performance` | `gcr.io/distroless/static-debian12:nonroot` | Performance validator |
+| `conformance` | `gcr.io/distroless/static-debian12:nonroot` | Conformance validator |
+| `aiperf-bench` | `python:3.12-slim` | AIPerf benchmark runner |
+
 Tags: `latest`, `vX.Y.Z`
 
 ### Supply Chain
@@ -147,9 +156,15 @@ Every release includes:
 ```bash
 export TAG=$(curl -s https://api.github.com/repos/NVIDIA/aicr/releases/latest | jq -r '.tag_name')
 
-# GitHub CLI
+# GitHub CLI (core images)
 gh attestation verify oci://ghcr.io/nvidia/aicr:${TAG} --owner nvidia
 gh attestation verify oci://ghcr.io/nvidia/aicrd:${TAG} --owner nvidia
+
+# GitHub CLI (validator images)
+gh attestation verify oci://ghcr.io/nvidia/aicr-validators/deployment:${TAG} --owner nvidia
+gh attestation verify oci://ghcr.io/nvidia/aicr-validators/performance:${TAG} --owner nvidia
+gh attestation verify oci://ghcr.io/nvidia/aicr-validators/conformance:${TAG} --owner nvidia
+gh attestation verify oci://ghcr.io/nvidia/aicr-validators/aiperf-bench:${TAG} --owner nvidia
 
 # Cosign
 cosign verify-attestation \
