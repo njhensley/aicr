@@ -16,12 +16,15 @@
     ":semanticCommitScope(deps)",
   ],
 
-  // Run on weekday mornings (UTC). Self-hosted Renovate cannot consume GitHub
-  // vulnerability alerts (that requires Mend's hosted service), so we run more
-  // often than Dependabot's "weekly" cadence to keep the security gap small.
-  // Patch auto-merge (below) drains low-risk PRs without human attention.
-  schedule: ["before 6am every weekday"],
-  timezone: "Etc/UTC",
+  // Scheduling is owned by the workflow cron in .github/workflows/renovate.yaml,
+  // not by a Renovate-side `schedule:` field. Self-hosted Renovate runs only
+  // when the workflow fires, so a second-layer schedule is redundant and
+  // creates an alignment trap — the two must overlap or every PR is held in
+  // "Awaiting Schedule". The cron is the single source of truth for cadence.
+  // Self-hosted Renovate cannot consume GitHub vulnerability alerts (that's a
+  // Mend-hosted feature), so the workflow cron is set to weekday mornings to
+  // keep the CVE-to-PR window tight; patch auto-merge drains low-risk PRs
+  // without human attention.
 
   prConcurrentLimit: 10,
   prHourlyLimit: 4,
