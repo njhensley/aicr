@@ -52,10 +52,13 @@ jobs:
       pull-requests: write
       issues: write
     timeout-minutes: 30
+    # No `actions/checkout` step — the renovatebot/github-action clones the
+    # repo internally inside its Docker container. An outer checkout adds a
+    # working tree + credentials at /home/runner/work that race with
+    # Renovate's own git operations and were observed causing
+    # "repository-changed" mid-run aborts (Renovate would create a branch,
+    # then immediately abort thinking the base branch had moved).
     steps:
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-
       # Do NOT pass `configurationFile:` here. That input maps to RENOVATE_CONFIG_FILE
       # (the runner's *global* config), and Renovate ALSO auto-discovers
       # .github/renovate.json5 as the *repo* config. If both point at the same file
