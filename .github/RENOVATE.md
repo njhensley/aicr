@@ -46,6 +46,14 @@ Cluster-impacting pins — `helm`, `kubectl`, `kind`, `kwok`, `chainsaw`, `karpe
 
 Renovate runs at **weekdays 05:00 UTC** (`cron: "0 5 * * 1-5"` in `.github/workflows/renovate.yaml`) plus on-demand via `workflow_dispatch`. The workflow cron is the **single source of truth** for cadence — there is intentionally no second-layer `schedule:` field in `renovate.json5`. Self-hosted Renovate runs only when the workflow fires, so a config-side schedule would be redundant and would risk PRs being held in "Awaiting Schedule" if the two ever drift out of overlap. Self-hosted Renovate cannot ingest GitHub vulnerability alerts (that's a Mend-hosted feature), so the weekday cadence narrows the window between an upstream CVE landing and the bump PR appearing; on-demand `workflow_dispatch` always creates PRs immediately.
 
+### Release cooldown
+
+`minimumReleaseAge: "3 days"` is set globally — Renovate will not propose an update until the upstream release has been public for at least three days. This defends against malicious-publish ratchet attacks (poisoned version live for hours then yanked, e.g. `event-stream`, `colors.js`, `node-ipc`). The trade-off is a 3-day delay on legitimate CVE fixes; given our security-relevant deps come entirely from upstream tooling we don't author, the marginal protection is worth it.
+
+Auto-merge rules raise the cooldown to **7 days** because those updates skip human review — the cooldown is the only line of defense if an attacker pushes a poisoned patch. The auto-merge allow-list is unchanged (github-actions, gomod, npm; plus the build/lint/security tooling allow-list in `.settings.yaml`).
+
+`internalChecksFilter: "strict"` excludes too-young releases entirely rather than parking them in the Dependency Dashboard as "pending" — keeps the dashboard signal clean (it shows what *will* land next, not what's blocked behind cooldown).
+
 ## How to add a new pin to `.settings.yaml`
 
 Add a `# renovate: …` comment on the line directly above the value. Three annotation shapes are supported by the broad regex manager. Each annotation **must** include a `depType=<section>` parameter naming the top-level YAML section it sits under (e.g. `build_tools`, `testing_tools`) — the `packageRules` use this to bundle PRs by section.

@@ -31,6 +31,20 @@
   labels: ["dependencies"],
   rebaseWhen: "behind-base-branch",
 
+  // Supply-chain cooldown. Releases must be ≥3 days old before Renovate
+  // will propose them. Defends against malicious-publish ratchet attacks
+  // where a poisoned version is live for hours and then yanked
+  // (event-stream, colors.js, node-ipc, ...). Trade-off: legitimate CVE
+  // patches land 3 days later than they otherwise would; for a project
+  // whose security-relevant deps come entirely from upstream tooling we
+  // don't write ourselves, that's an acceptable cost. Auto-merge rules
+  // below raise this to 7 days for items that bypass human review.
+  minimumReleaseAge: "3 days",
+  // "strict" excludes too-young releases entirely rather than parking
+  // them in the Dependency Dashboard as "pending". Keeps the dashboard
+  // signal clean — it shows what *will* land next, not what's blocked.
+  internalChecksFilter: "strict",
+
   // Match the conventional-commit prefix dependabot used so the changelog stays consistent.
   commitMessagePrefix: "chore(deps):",
 
@@ -87,9 +101,13 @@
   packageRules: [
     // ---- Auto-merge: workflow digests, Go module patches, npm site deps ----
     // Low-blast-radius managers where patch / digest bumps almost never break.
+    // minimumReleaseAge raised from the 3-day global default to 7 days because
+    // these bumps skip human review — the cooldown is the only line of defense
+    // against a malicious release sneaking through.
     {
       matchUpdateTypes: ["patch", "pin", "digest"],
       matchManagers: ["github-actions", "gomod", "npm"],
+      minimumReleaseAge: "7 days",
       automerge: true,
       automergeType: "pr",
       platformAutomerge: true,
@@ -99,7 +117,8 @@
     // Positive-list rather than exclude-list — anything cluster-impacting
     // (helm, kubectl, kind, kwok, chainsaw, karpenter, gpu-operator,
     // kindest/node, CUDA, Go toolchain, node, hugo, nvkind) requires a
-    // human eye on the PR even for patch bumps.
+    // human eye on the PR even for patch bumps. Same 7-day cooldown as the
+    // managers rule above; auto-merged items get the longer runway.
     {
       matchUpdateTypes: ["patch", "pin", "digest"],
       matchManagers: ["custom.regex"],
@@ -117,6 +136,7 @@
         "sigstore/cosign",
         "mikefarah/yq",
       ],
+      minimumReleaseAge: "7 days",
       automerge: true,
       automergeType: "pr",
       platformAutomerge: true,
