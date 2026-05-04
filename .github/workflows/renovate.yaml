@@ -75,16 +75,19 @@ jobs:
         if: ${{ inputs.dryRun }}
         run: echo "RENOVATE_DRY_RUN=full" >> "$GITHUB_ENV"
 
-      # `configurationFile` mounts the named file into the container and
-      # sets RENOVATE_CONFIG_FILE. Renovate also auto-discovers the repo's
-      # own `.github/renovate.json5` from the cloned working tree. When
-      # both point at the same file, customManagers can be applied twice
-      # in `RENOVATE_PLATFORM=local` dry-runs — but in production
-      # (platform=github), Renovate dedupes by manager identity, so the
-      # same-file case is benign. Passing it here matches the upstream
-      # pattern and avoids a documented class of mid-run race conditions
-      # that caused "repository-changed" aborts when the input was
-      # omitted.
+      # Do NOT pass `configurationFile:` here — confirmed in production
+      # (run 25346453345, regex manager stats `fileCount: 4, depCount: 56`
+      # vs expected 2/28): the action mounts the file as global config
+      # AND Renovate auto-discovers `.github/renovate.json5` from the
+      # cloned working tree. Both loads register the same customManagers,
+      # every annotation gets extracted twice, and downstream commits log
+      # "Cannot find replaceString in current file content. Was it
+      # already updated?" warnings on the second pass. Renovate does NOT
+      # dedupe by manager identity in this case — that earlier hypothesis
+      # was wrong. PR #6 re-added this input chasing the
+      # "repository-changed" aborts; the actual cause was the missing
+      # `statuses: write` permission (fixed in PR #7), not the absence
+      # of a global config.
       #
       # `renovate-version` carries the tag AND digest pin: the action
       # constructs the image as `${renovate-image}:${renovate-version}`,
@@ -94,7 +97,6 @@ jobs:
       - name: Run Renovate
         uses: renovatebot/github-action@f66d8679fcfcfa051abde6e7a623007173bf5164  # v46.1.12
         with:
-          configurationFile: .github/renovate.json5
           renovate-version: '43@sha256:00185c0d63462acec8331cc9a94dcd74a763f2765fca0edcc3ff568af1dc8104'
         env:
           RENOVATE_TOKEN: ${{ secrets.GITHUB_TOKEN }}
