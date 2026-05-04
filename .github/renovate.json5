@@ -222,17 +222,19 @@
       matchManagers: ["custom.regex"],
       matchDepTypes: ["languages"],
     },
-    // Anchore's grype + syft + scan-action share release cadence. Applied
-    // AFTER the section groups so it wins for anchore/* (which sit in
-    // security_tools); Renovate's last-rule-wins semantics apply here.
+    // Supply-chain hardening tools — Anchore (grype/syft/sbom-action/
+    // scan-action) and Sigstore (cosign/cosign-installer). Both orgs ship
+    // related but independent tools; bundling them lets one reviewer see
+    // every supply-chain bump in a single PR. The matchPackageNames glob
+    // spans both .settings.yaml entries (regex manager) and GitHub Actions
+    // entries (anchore/sbom-action, anchore/scan-action,
+    // sigstore/cosign-installer) — cross-manager grouping by org prefix.
+    // Applied AFTER the section groups so it wins for anchore/* (which
+    // sit in .settings.yaml security_tools); Renovate's last-rule-wins
+    // semantics apply here.
     {
-      groupName: "anchore",
-      matchPackageNames: ["anchore/**"],
-    },
-    // Sigstore's cosign + cosign-installer.
-    {
-      groupName: "sigstore",
-      matchPackageNames: ["sigstore/**"],
+      groupName: "supply-chain",
+      matchPackageNames: ["anchore/**", "sigstore/**"],
     },
 
     // ---- The Go toolchain version is owned by .settings.yaml.languages.go, not go.mod ----
