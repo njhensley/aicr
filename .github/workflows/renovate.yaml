@@ -51,6 +51,13 @@ jobs:
       contents: write
       pull-requests: write
       issues: write
+      # Renovate calls POST /repos/{owner}/{repo}/statuses/{sha} after each
+      # branch creation to write a "stability" status check (tied to the
+      # cooldown / merge-confidence flow). Without statuses:write the call
+      # 403s with "integration-unauthorized" and Renovate maps that error
+      # internally to "repository-changed", aborting the whole run with
+      # the misleading "Repository has changed during renovation" message.
+      statuses: write
     timeout-minutes: 30
     steps:
       # Mirrors NVIDIA/gpu-operator's known-working pattern. The action
