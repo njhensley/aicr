@@ -13,7 +13,7 @@ Companion script: [`tools/update-chainsaw-checksums`](../tools/update-chainsaw-c
 
 ## Architecture
 
-Self-hosted via `renovatebot/github-action`, scheduled weekly (Mondays 09:00 UTC) plus `workflow_dispatch`. Auth is the built-in `secrets.GITHUB_TOKEN`; the repo's `/ok` reviewer-comment policy re-fires CI on bot PRs, sidestepping GitHub's "GITHUB_TOKEN cannot trigger workflows" limitation. Pattern matches [`NVIDIA/gpu-operator`](https://github.com/NVIDIA/gpu-operator/blob/main/.github/workflows/renovate.yaml).
+Self-hosted via `renovatebot/github-action`, scheduled weekdays 05:00 UTC (`0 5 * * 1-5`) plus `workflow_dispatch`. Auth is the built-in `secrets.GITHUB_TOKEN`; the repo's `/ok` reviewer-comment policy re-fires CI on bot PRs, sidestepping GitHub's "GITHUB_TOKEN cannot trigger workflows" limitation. Pattern matches [`NVIDIA/gpu-operator`](https://github.com/NVIDIA/gpu-operator/blob/main/.github/workflows/renovate.yaml).
 
 ### Coverage
 
@@ -44,7 +44,15 @@ Cluster-impacting pins — `helm`, `kubectl`, `kind`, `kwok`, `chainsaw`, `karpe
 
 ### Schedule
 
-Renovate runs `before 6am every weekday` (UTC) plus on-demand via `workflow_dispatch`. Self-hosted Renovate cannot ingest GitHub vulnerability alerts (that's a Mend-hosted feature), so weekday cadence narrows the window between an upstream CVE landing and the bump PR appearing.
+Renovate runs at **weekdays 05:00 UTC** (`cron: "0 5 * * 1-5"` in `.github/workflows/renovate.yaml`) plus on-demand via `workflow_dispatch`. The workflow cron is the **single source of truth** for cadence — there is intentionally no second-layer `schedule:` field in `renovate.json5`. Self-hosted Renovate runs only when the workflow fires, so a config-side schedule would be redundant and would risk PRs being held in "Awaiting Schedule" if the two ever drift out of overlap. Self-hosted Renovate cannot ingest GitHub vulnerability alerts (that's a Mend-hosted feature), so the weekday cadence narrows the window between an upstream CVE landing and the bump PR appearing; on-demand `workflow_dispatch` always creates PRs immediately.
+
+### Release cooldown
+
+`minimumReleaseAge: "3 days"` is set globally — Renovate will not propose an update until the upstream release has been public for at least three days. This defends against malicious-publish ratchet attacks (poisoned version live for hours then yanked, e.g. `event-stream`, `colors.js`, `node-ipc`). The trade-off is a 3-day delay on legitimate CVE fixes; given our security-relevant deps come entirely from upstream tooling we don't author, the marginal protection is worth it.
+
+Auto-merge rules raise the cooldown to **7 days** because those updates skip human review — the cooldown is the only line of defense if an attacker pushes a poisoned patch. The auto-merge allow-list is unchanged (github-actions, gomod, npm; plus the build/lint/security tooling allow-list in `.settings.yaml`).
+
+`internalChecksFilter: "strict"` excludes too-young releases entirely rather than parking them in the Dependency Dashboard as "pending" — keeps the dashboard signal clean (it shows what *will* land next, not what's blocked behind cooldown).
 
 ## How to add a new pin to `.settings.yaml`
 
@@ -159,5 +167,5 @@ Reference the Phase D run IDs in the PR description as evidence. Then monitor th
 - **AWS EFA device-plugin image (`recipes/components/aws-efa/values.yaml`)** is published only to AWS's authenticated public ECR (`602401143452.dkr.ecr.us-west-2.amazonaws.com/eks/aws-efa-k8s-device-plugin`); there is no `public.ecr.aws` mirror. Renovate without AWS credentials cannot enumerate tags, so the image is in `ignoreDeps`. Bumps are tied to AWS releasing a new EKS add-on version and need to be handled manually.
 - **`recipes/components/*/values.yaml`** is partially covered. Renovate's built-in `helm-values` manager picks up the conventional `image: { repository, tag }` shape but won't auto-detect arbitrary chart-value version fields. To extend coverage, add `# renovate:` annotations directly to those files (the customManager only scans `.settings.yaml` today).
 - **`extractVersion` rules** rely on `matchDepNames`. If you add a tool whose upstream releases are tagged `vX.Y.Z` but the value in `.settings.yaml` is bare `X.Y.Z`, add it to the existing `extractVersion: "^v(?<version>.+)$"` rule's `matchDepNames` list.
-- **No vulnerability fast-path.** Self-hosted Renovate cannot consume GitHub vulnerability alerts (that's a Mend-hosted feature). The weekday schedule is the mitigation.
+- **No vulnerability fast-path.** Self-hosted Renovate cannot consume GitHub vulnerability alerts (that's a Mend-hosted feature). The weekday cron in `.github/workflows/renovate.yaml` is the mitigation.
 - **The Renovate runner image (`ghcr.io/renovatebot/renovate`) is not yet auto-managed.** It's referenced in two places — the `RENOVATE_VALIDATOR_IMAGE` variable in `Makefile` (used by `verify-renovate` in `merge-gate.yaml`) and the `renovate-version: '43@sha256:...'` input in `.github/workflows/renovate.yaml` — and both digest pins must be bumped manually in lockstep. The customManager regex in `renovate.json5` doesn't currently capture `image:tag@sha256:...` shapes; future work could extend it so Renovate self-bumps these.

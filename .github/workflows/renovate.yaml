@@ -21,8 +21,10 @@ name: Renovate
 
 on:
   schedule:
-    # Mondays 09:00 UTC. Patch auto-merge keeps drain-rate high without daily noise.
-    - cron: "0 9 * * 1"
+    # Weekdays 05:00 UTC. This cron is Renovate's only schedule — there is no
+    # second-layer `schedule:` in renovate.json5 (see comment there). Patch
+    # auto-merge drains low-risk PRs between runs without human attention.
+    - cron: "0 5 * * 1-5"
   workflow_dispatch:
     inputs:
       logLevel:
