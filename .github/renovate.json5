@@ -26,8 +26,16 @@
   // keep the CVE-to-PR window tight; patch auto-merge drains low-risk PRs
   // without human attention.
 
+  // `prConcurrentLimit` caps how many Renovate PRs are open at once;
+  // `prHourlyLimit` caps how many *new* PRs Renovate can create in a
+  // rolling hour. Renovate's default for the hourly limit (2) is tuned
+  // for Mend-hosted runs with hundreds of repos sharing upstream
+  // package-index courtesy budgets. For self-hosted in a single repo
+  // the constraint is just "don't flood reviewers"; the concurrent
+  // limit handles that on its own. Match the two so the hourly cap
+  // never holds back updates the concurrent cap would let through.
   prConcurrentLimit: 10,
-  prHourlyLimit: 4,
+  prHourlyLimit: 10,
   labels: ["dependencies"],
   rebaseWhen: "behind-base-branch",
 
