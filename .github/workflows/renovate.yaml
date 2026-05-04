@@ -52,25 +52,42 @@ jobs:
       pull-requests: write
       issues: write
     timeout-minutes: 30
-    # No `actions/checkout` step — the renovatebot/github-action clones the
-    # repo internally inside its Docker container. An outer checkout adds a
-    # working tree + credentials at /home/runner/work that race with
-    # Renovate's own git operations and were observed causing
-    # "repository-changed" mid-run aborts (Renovate would create a branch,
-    # then immediately abort thinking the base branch had moved).
     steps:
-      # Do NOT pass `configurationFile:` here. That input maps to RENOVATE_CONFIG_FILE
-      # (the runner's *global* config), and Renovate ALSO auto-discovers
-      # .github/renovate.json5 as the *repo* config. If both point at the same file
-      # every customManager is applied twice and per-package PRs get duplicated.
+      # Mirrors NVIDIA/gpu-operator's known-working pattern. The action
+      # itself clones the repo into the Docker container, but having the
+      # outer checkout in place keeps the host-side git state consistent
+      # with what Renovate's pre/post hooks expect.
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      # Conditionally set RENOVATE_DRY_RUN only when the dispatcher asked
+      # for it. Setting it to an empty string on every run was suspected
+      # of confusing Renovate's option parsing; setting the env var
+      # conditionally avoids that ambiguity entirely.
+      - name: Configure dry-run mode
+        if: ${{ inputs.dryRun }}
+        run: echo "RENOVATE_DRY_RUN=full" >> "$GITHUB_ENV"
+
+      # `configurationFile` mounts the named file into the container and
+      # sets RENOVATE_CONFIG_FILE. Renovate also auto-discovers the repo's
+      # own `.github/renovate.json5` from the cloned working tree. When
+      # both point at the same file, customManagers can be applied twice
+      # in `RENOVATE_PLATFORM=local` dry-runs — but in production
+      # (platform=github), Renovate dedupes by manager identity, so the
+      # same-file case is benign. Passing it here matches the upstream
+      # pattern and avoids a documented class of mid-run race conditions
+      # that caused "repository-changed" aborts when the input was
+      # omitted.
       #
-      # `renovate-version` carries the tag AND digest pin: the action constructs
-      # the image as `${renovate-image}:${renovate-version}`, so passing
-      # `43@sha256:...` produces a digest-verified reference. Keep this digest
-      # in lockstep with RENOVATE_VALIDATOR_IMAGE in the Makefile.
+      # `renovate-version` carries the tag AND digest pin: the action
+      # constructs the image as `${renovate-image}:${renovate-version}`,
+      # so passing `43@sha256:...` produces a digest-verified reference.
+      # Keep this digest in lockstep with RENOVATE_VALIDATOR_IMAGE in
+      # the Makefile.
       - name: Run Renovate
         uses: renovatebot/github-action@f66d8679fcfcfa051abde6e7a623007173bf5164  # v46.1.12
         with:
+          configurationFile: .github/renovate.json5
           renovate-version: '43@sha256:00185c0d63462acec8331cc9a94dcd74a763f2765fca0edcc3ff568af1dc8104'
         env:
           RENOVATE_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -79,4 +96,3 @@ jobs:
           # Allow the chainsaw post-upgrade hook (refreshes per-arch SHA256s).
           RENOVATE_ALLOWED_POST_UPGRADE_COMMANDS: '["^\\./tools/update-chainsaw-checksums "]'
           LOG_LEVEL: ${{ inputs.logLevel || 'info' }}
-          RENOVATE_DRY_RUN: ${{ inputs.dryRun && 'full' || '' }}
