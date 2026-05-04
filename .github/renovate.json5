@@ -170,9 +170,15 @@
       groupName: "terraform",
       matchManagers: ["terraform"],
     },
-    // All site/package.json updates land as a single PR.
+    // Docs build chain — bundles `.settings.yaml` docs_tools (hugo + the
+    // node runtime used for versioned-site builds) with everything in
+    // site/package.json (vitepress + vue + mermaid + esbuild + vite).
+    // Both halves are part of one docs pipeline and tend to be reviewed
+    // together. See the matching section group rule below for the regex
+    // manager half — both rules share groupName so deps from either
+    // manager land in the same `renovate/docs` PR.
     {
-      groupName: "site",
+      groupName: "docs",
       matchManagers: ["npm"],
     },
     // .settings.yaml updates grouped by top-level YAML section (depType).
@@ -205,8 +211,10 @@
       matchManagers: ["custom.regex"],
       matchDepTypes: ["testing_tools"],
     },
+    // docs_tools section bundles into the same `docs` group as site/package.json
+    // above — hugo, the docs node runtime, and the vitepress site live together.
     {
-      groupName: "docs-tools",
+      groupName: "docs",
       matchManagers: ["custom.regex"],
       matchDepTypes: ["docs_tools"],
     },
