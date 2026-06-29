@@ -4,5 +4,9 @@ attestations:
       digest: sha256:e1f6d6c5c8a713f37ad51afd3d40ad1e796a742ddae2e4e37eaecd3db7e9b9b8
       oci: ghcr.io/njhensley/aicr-evidence/h100-eks-ubuntu-training-kubeflow:run-28397795633
       predicateType: https://aicr.run/recipe-evidence/v1
+    signer:
+      identity: https://github.com/njhensley/aicr/.github/workflows/evidence-publish.yaml@refs/heads/test/evidence-unsigned-contributor-flow
+      issuer: https://token.actions.githubusercontent.com
+      rekorLogIndex: 2014682420
 recipe: h100-eks-ubuntu-training-kubeflow
 schemaVersion: 1.0.0
