@@ -184,6 +184,20 @@ func (r *Registry) Validate() error {
 			}
 			daytimeCloud[res.Cloud] = res.Name
 		}
+		// Single-cluster reuse requires the cloud's pipeline to implement the
+		// session-* lifecycles (session_id pass-through, session-up/cell/down
+		// handling, and a GPU recycle script). Enforced against an ALLOWLIST so a
+		// cloud added later without that support fails closed here rather than
+		// silently reporting a green batch leg: a pipeline that does not handle a
+		// session-* lifecycle SKIPS its job, and a workflow run whose only job is
+		// skipped concludes `success`, which the nightly controller records as a
+		// passing cell — a PASS with nothing provisioned, installed, or validated.
+		if res.NightlyReuseCluster && !ReuseCapableCloud(res.Cloud) {
+			return errors.New(errors.ErrCodeInvalidRequest,
+				fmt.Sprintf("reservation %s sets nightly-reuse-cluster on cloud %q, which does not implement the session-* lifecycles "+
+					"(want %s, %s, or %s); a session dispatch there would skip its job and report a green batch leg that ran nothing",
+					res.Name, res.Cloud, CloudAWS, CloudGCP, CloudAzure))
+		}
 	}
 	return nil
 }

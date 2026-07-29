@@ -80,6 +80,31 @@
 #                       cloud may carry a daytime-intent today: a single
 #                       reservation cannot hold both a long-lived daytime
 #                       cluster and the nightly batch at once.
+#   nightly-reuse-cluster (optional, bool; absent = false) opts this reservation
+#                       into SINGLE-CLUSTER REUSE for the nightly version matrix.
+#                       When true, the nightly controller provisions ONE
+#                       uniquely-named session cluster per batch leg, runs every
+#                       (version × intent) cell against it — uninstalling the
+#                       AICR stack and RECYCLING the GPU nodes (terminate →
+#                       clean-boot replacements) between cells so each cell still
+#                       validates a from-scratch GPU-runtime deploy — then tears
+#                       the session cluster down ONCE at the end. This replaces
+#                       the per-cell provision→CUJ→teardown with a single
+#                       provision + teardown per batch, saving ~1h of infra churn
+#                       per extra cell. The session cluster is named uniquely per
+#                       batch (…-sess-<batch-run-id>-<reservation>), never a
+#                       stable reused name — a reused name collides with cloud
+#                       deletion tombstones / stale terraform-state locks. A cell
+#                       whose recipe k8s constraints the session cluster cannot
+#                       satisfy FAILS FAST (the compat gate) rather than running
+#                       against a mismatched cluster — the same outcome a per-cell
+#                       run would reach, since a reservation has a single
+#                       cluster-config and a dedicated reprovision would be the
+#                       same shape and equally incompatible; so reuse never trades
+#                       correctness for the saved time. Absent/false keeps today's
+#                       per-cell behavior; flip to true only after a green manual
+#                       session run (see docs/contributor/uat.md → Single-cluster
+#                       reuse).
 reservations:
   - name: aws-h100
     cloud: aws

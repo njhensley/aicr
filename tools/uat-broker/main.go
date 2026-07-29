@@ -196,6 +196,18 @@ func runReservations(args []string, stdout, stderr io.Writer) error {
 		// Empty when the reservation is not in the daytime rotation; callers
 		// that don't consume this key simply ignore the line.
 		fmt.Fprintf(&b, "daytime-intent=%s\n", res.DaytimeIntent)
+		// Single-cluster reuse opt-in for the nightly batch. Emitted as a
+		// literal true/false so the controller can branch on it with a plain
+		// string compare; absent in the registry decodes to false.
+		fmt.Fprintf(&b, "nightly-reuse-cluster=%t\n", res.NightlyReuseCluster)
+		// Whether this reservation's CLOUD implements the session-* lifecycles
+		// (the reuseCapableClouds allowlist). Emitted so the nightly controller's
+		// runtime reuse override (reuse_mode=force-on) can gate on the same set
+		// Validate() enforces for the static flag — without re-encoding the
+		// allowlist in bash. A force-on on a non-capable cloud must fall back to
+		// per-cell, else its session-* dispatch would skip the job and report a
+		// green leg that ran nothing.
+		fmt.Fprintf(&b, "nightly-reuse-capable=%t\n", uatbroker.ReuseCapableCloud(res.Cloud))
 	}
 
 	if _, err := io.WriteString(stdout, b.String()); err != nil {

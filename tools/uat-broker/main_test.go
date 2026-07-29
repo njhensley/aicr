@@ -80,10 +80,72 @@ func TestReservationsResolve(t *testing.T) {
 		"cluster-config-path=tests/uat/aws/cluster-config.yaml",
 		"test-config-dir=tests/uat/aws/tests",
 		"nightly-intents=training,inference",
+		// Absent nightly-reuse-cluster decodes to false and is reported so the
+		// controller can branch on a plain string compare.
+		"nightly-reuse-cluster=false",
+		// aws is a reuse-capable cloud, so the controller's force-on override may
+		// attempt single-cluster reuse on this reservation.
+		"nightly-reuse-capable=true",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("stdout missing %q\ngot:\n%s", want, stdout)
 		}
+	}
+}
+
+// TestReservationsResolveReuseCluster asserts an explicit
+// nightly-reuse-cluster: true is reported verbatim so the nightly controller
+// switches the reservation's leg into single-cluster session mode.
+func TestReservationsResolveReuseCluster(t *testing.T) {
+	const reg = `
+reservations:
+  - name: aws-h100
+    cloud: aws
+    reservation-id: cr-x
+    accelerator: h100
+    gpu-count: 8
+    cluster-config-path: c.yaml
+    test-config-dir: t
+    nightly-reuse-cluster: true
+`
+	p := filepath.Join(t.TempDir(), "reservations.yaml")
+	if err := os.WriteFile(p, []byte(reg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, stderr := invoke("", "reservations", "--file", p, "--name", "aws-h100")
+	if code != 0 {
+		t.Fatalf("exit code = %d (stderr: %s)", code, stderr)
+	}
+	if !strings.Contains(stdout, "nightly-reuse-cluster=true\n") {
+		t.Errorf("stdout missing nightly-reuse-cluster=true\ngot:\n%s", stdout)
+	}
+}
+
+// TestReservationsResolveReuseCapable asserts the broker reports the cloud's
+// session-* capability so the controller's runtime reuse override (force-on)
+// fails closed on a non-capable cloud without re-encoding the allowlist in bash.
+// A kind lane is NOT reuse-capable (its uat-kind.yaml gates its only job on
+// lifecycle=='nightly', so a session-* dispatch would skip and report green).
+func TestReservationsResolveReuseCapable(t *testing.T) {
+	const reg = `
+reservations:
+  - name: kind-h100
+    cloud: kind
+    accelerator: h100
+    gpu-count: 2
+    cluster-config-path: tests/uat/kind/cluster-config.yaml
+    test-config-dir: tests/uat/kind/tests
+`
+	p := filepath.Join(t.TempDir(), "reservations.yaml")
+	if err := os.WriteFile(p, []byte(reg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, stderr := invoke("", "reservations", "--file", p, "--name", "kind-h100")
+	if code != 0 {
+		t.Fatalf("exit code = %d (stderr: %s)", code, stderr)
+	}
+	if !strings.Contains(stdout, "nightly-reuse-capable=false\n") {
+		t.Errorf("stdout missing nightly-reuse-capable=false for kind\ngot:\n%s", stdout)
 	}
 }
 

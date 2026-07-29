@@ -37,9 +37,21 @@ on:
         type: string
         default: training
       lifecycle:
-        description: 'nightly (provision→CUJ→teardown) | daytime-up (provision+deploy+HOLD) | daytime-down (tear down the held daytime cluster).'
+        description: >-
+          nightly (provision→CUJ→teardown) | daytime-up (provision+deploy+HOLD) |
+          daytime-down (tear down the held daytime cluster) | session-up (provision one
+          shared reuse cluster + HOLD) | session-cell (run one cell against the shared
+          cluster, then uninstall + recycle GPU nodes) | session-down (tear down the
+          shared cluster).
         type: string
         default: nightly
+      session_id:
+        description: >-
+          Opaque unique token identifying the shared session cluster for the session-*
+          lifecycles (the controller sets it per batch leg; empty for non-session
+          lifecycles). The cluster is named aicr-sess-<session_id>.
+        type: string
+        default: ''
       cluster_config_path:
         description: 'Cluster-config the GKE actuator provisions from (from infra/uat/reservations.yaml).'
         type: string
@@ -103,7 +115,16 @@ jobs:
       DEPLOYMENT_ID: >-
         ${{ (inputs.lifecycle == 'daytime-up' || inputs.lifecycle == 'daytime-down')
         && format('aicr-day-{0}', inputs.reservation)
+        || ((inputs.lifecycle == 'session-up' || inputs.lifecycle == 'session-cell' || inputs.lifecycle == 'session-down')
+        && format('aicr-sess-{0}', inputs.session_id))
         || format('aicr-{0}', github.run_id) }}
+      # Lifecycle role classifiers (see uat-aws.yaml for the rationale).
+      # RUN_PROVISIONS: this run stands up a NEW cluster (Bringup). RUN_INSTALL:
+      # this run builds the binary/images and runs prep+install.
+      RUN_PROVISIONS: >-
+        ${{ inputs.lifecycle == 'nightly' || inputs.lifecycle == 'daytime-up' || inputs.lifecycle == 'session-up' }}
+      RUN_INSTALL: >-
+        ${{ inputs.lifecycle == 'nightly' || inputs.lifecycle == 'daytime-up' || inputs.lifecycle == 'session-cell' }}
       CLUSTER_CONFIG: ${{ inputs.cluster_config_path }}
       # DC2 selects the AICRConfig by intent; both intents drive the same
       # cluster-config (GPU pool from the reservation, system/CPU pools dynamic).
@@ -141,6 +162,8 @@ jobs:
         env:
           INTENT: ${{ inputs.intent }}
           LIFECYCLE: ${{ inputs.lifecycle }}
+          SESSION_ID: ${{ inputs.session_id }}
+          RESERVATION_NAME: ${{ inputs.reservation }}
         run: |
           set -euo pipefail
           case "${INTENT}" in
@@ -148,10 +171,41 @@ jobs:
             *) echo "::error::unknown intent '${INTENT}' (want training|inference)"; exit 1 ;;
           esac
           case "${LIFECYCLE}" in
-            nightly|daytime-up|daytime-down) ;;
-            *) echo "::error::unknown lifecycle '${LIFECYCLE}' (want nightly|daytime-up|daytime-down)"; exit 1 ;;
+            nightly|daytime-up|daytime-down|session-up|session-cell|session-down) ;;
+            *) echo "::error::unknown lifecycle '${LIFECYCLE}' (want nightly|daytime-up|daytime-down|session-up|session-cell|session-down)"; exit 1 ;;
           esac
-          if [[ ! -f "${TEST_CONFIG}" ]]; then
+          # session-* lifecycles derive the (uniquely-named) shared cluster from
+          # session_id (DEPLOYMENT_ID = aicr-sess-<session_id>). GKE cluster names
+          # are lowercase [a-z0-9-] and capped at 40 chars; "aicr-sess-" is 10, so
+          # require a lowercase session_id of at most 30 chars.
+          case "${LIFECYCLE}" in
+            session-up|session-cell|session-down)
+              if [[ -z "${SESSION_ID}" ]]; then
+                echo "::error::lifecycle '${LIFECYCLE}' requires a non-empty session_id"; exit 1
+              fi
+              if ! [[ "${SESSION_ID}" =~ ^[a-z0-9][a-z0-9-]{0,29}$ ]]; then
+                echo "::error::invalid session_id '${SESSION_ID}' (want ^[a-z0-9][a-z0-9-]{0,29}\$ so aicr-sess-<session_id> is a valid GKE cluster name)"; exit 1
+              fi
+              # Bind the session cluster to THIS reservation. session_id is
+              # otherwise only charset-validated, so a mistyped manual dispatch
+              # could connect to ANOTHER reservation's session cluster and — on
+              # the always()-gated cleanup path — uninstall its stack and recycle
+              # its GPU nodes mid-test. The controller always generates
+              # <run_id>-<attempt>-<reservation>, so requiring the suffix costs
+              # it nothing and makes the mix-up impossible.
+              if [[ "${SESSION_ID}" != *"${RESERVATION_NAME}" ]]; then
+                echo "::error::session_id '${SESSION_ID}' does not end with the reservation name '${RESERVATION_NAME}';"
+                echo "::error::refusing — a session cluster must belong to the reservation whose lease this run holds."
+                exit 1
+              fi
+              ;;
+          esac
+          # A cell/install run needs its test config; session-up (provision only)
+          # and session-down / daytime-down (teardown only) do not.
+          # session-up also invokes the runner (guard-fresh), and uat_main requires the
+          # config for EVERY phase — so check it here rather than failing after a ~1h
+          # provision with a confusing "test-config not found".
+          if [[ ( "${RUN_INSTALL}" == "true" || "${LIFECYCLE}" == "session-up" ) && ! -f "${TEST_CONFIG}" ]]; then
             echo "::error::test config not found: ${TEST_CONFIG}"; exit 1
           fi
           echo "intent=${INTENT} lifecycle=${LIFECYCLE} test-config=${TEST_CONFIG} cluster=${DEPLOYMENT_ID}"
@@ -179,7 +233,7 @@ jobs:
       # instead (next step). daytime-down tears down the held cluster only — it
       # builds nothing and pushes no images.
       - name: Build aicr binary
-        if: inputs.aicr_version == '' && inputs.skip_tests != true && inputs.lifecycle != 'daytime-down'
+        if: inputs.aicr_version == '' && inputs.skip_tests != true && env.RUN_INSTALL == 'true'
         env:
           GOFLAGS: -mod=vendor
           # github.sha via env (never inline ${{ }} in a shell run — expression
@@ -217,7 +271,7 @@ jobs:
       # :<version>) and the snapshot-agent via ghcr.io/nvidia/aicr:<version> — so
       # the validator/agent build+push steps below are skipped for release cells.
       - name: Install released aicr
-        if: inputs.aicr_version != '' && inputs.skip_tests != true && inputs.lifecycle != 'daytime-down'
+        if: inputs.aicr_version != '' && inputs.skip_tests != true && env.RUN_INSTALL == 'true'
         uses: ./.github/actions/install-aicr-release
         with:
           aicr-version: ${{ inputs.aicr_version }}
@@ -229,7 +283,7 @@ jobs:
       # Main cell only: release cells use the released validator images the
       # released binary self-resolves to (skipped when aicr_version is set).
       - name: Build and push validator images
-        if: inputs.aicr_version == '' && inputs.skip_tests != true && inputs.lifecycle != 'daytime-down'
+        if: inputs.aicr_version == '' && inputs.skip_tests != true && env.RUN_INSTALL == 'true'
         run: |
           GO_VERSION="$(cat .go-version)"
           # CHAINSAW_* args dropped in #1236 — the deployment validator
@@ -286,33 +340,59 @@ jobs:
       # contention. Detect by the stable daytime cluster name
       # (aicr-day-<reservation>); we already hold the reservation lease
       # (uat-run.yaml) and are authenticated, so this runs before Bringup and
-      # fails fast rather than racing. Only the nightly lifecycle guards —
-      # daytime-up creates that cluster, daytime-down removes it.
-      - name: Pre-batch guard — refuse if a daytime cluster still holds the reservation
+      # fails fast rather than racing. Both the nightly and session-up lifecycles
+      # provision on the reservation, so both guard — daytime-up creates that
+      # daytime cluster, daytime-down removes it, and the session lifecycles use
+      # uniquely-named clusters that do not collide.
+      - name: Pre-batch guard — refuse if a daytime or leaked session cluster holds the reservation
         id: guard
-        if: inputs.lifecycle == 'nightly'
+        if: env.RUN_PROVISIONS == 'true'
         env:
+          LIFECYCLE: ${{ inputs.lifecycle }}
           RESERVATION: ${{ inputs.reservation }}
         run: |
           set -euo pipefail
-          DAYTIME_NAME="aicr-day-${RESERVATION}"
-          set +e
-          OUT=$(gcloud container clusters describe "${DAYTIME_NAME}" \
-            --region "${GCP_REGION}" --project "${GCP_PROJECT_ID}" 2>&1)
-          RC=$?
-          set -e
-          if [[ ${RC} -eq 0 ]]; then
-            echo "::error::daytime cluster ${DAYTIME_NAME} still holds reservation ${RESERVATION}; refusing to start the nightly batch. Tear it down first (uat-run lifecycle=daytime-down)."
+          # The daytime-name check is for runs that must NOT collide with a held
+          # daytime cluster. daytime-up is exempt: that cluster is its own target,
+          # and re-running the morning handoff must be idempotent, not self-refusing.
+          if [[ "${LIFECYCLE}" != "daytime-up" ]]; then
+            DAYTIME_NAME="aicr-day-${RESERVATION}"
+            set +e
+            OUT=$(gcloud container clusters describe "${DAYTIME_NAME}" \
+              --region "${GCP_REGION}" --project "${GCP_PROJECT_ID}" 2>&1)
+            RC=$?
+            set -e
+            if [[ ${RC} -eq 0 ]]; then
+              echo "::error::daytime cluster ${DAYTIME_NAME} still holds reservation ${RESERVATION}; refusing to start the nightly batch. Tear it down first (uat-run lifecycle=daytime-down)."
+              exit 1
+            fi
+            # Fail closed on anything that is NOT a definitive "does not exist":
+            # a throttle/auth error must not be read as "clear to proceed".
+            if grep -qE 'code=404|Not found|No cluster' <<<"${OUT}"; then
+              echo "no daytime cluster on reservation ${RESERVATION}; proceeding"
+            else
+              echo "::error::could not determine daytime-cluster state for ${DAYTIME_NAME}: ${OUT}"
+              exit 1
+            fi
+          fi
+
+          # A LEAKED session cluster holds the reservation's GPU capacity just as
+          # a daytime cluster does, but its name is unique per batch — so unlike
+          # the daytime name, nothing in the system can ever name it again. Sweep
+          # by PREFIX and refuse with the exact teardown command, turning an
+          # opaque "insufficient capacity" failure deep inside Bringup into an
+          # actionable one here. Our own cluster is excluded (session-up creates
+          # it after this guard runs).
+          LEAKED=$(gcloud container clusters list --project "${GCP_PROJECT_ID}" --format="value(name)" 2>/dev/null | grep "^aicr-sess-" | grep -vx "${DEPLOYMENT_ID}" || true)
+          if [[ -n "${LEAKED}" ]]; then
+            echo "::error::leaked UAT session cluster(s) still holding capacity on this account:"
+            while IFS= read -r c; do
+              [[ -z "${c}" ]] && continue
+              echo "::error::  ${c} — tear down with: gh workflow run uat-run.yaml -f reservation=${RESERVATION} -f lifecycle=session-down -f session_id=${c#aicr-sess-}"
+            done <<<"${LEAKED}"
             exit 1
           fi
-          # Fail closed on anything that is NOT a definitive "does not exist":
-          # a throttle/auth error must not be read as "clear to proceed".
-          if grep -qE 'code=404|Not found|No cluster' <<<"${OUT}"; then
-            echo "no daytime cluster on reservation ${RESERVATION}; proceeding"
-          else
-            echo "::error::could not determine daytime-cluster state for ${DAYTIME_NAME}: ${OUT}"
-            exit 1
-          fi
+          echo "no leaked session clusters on this account; proceeding"
 
       # Deps
       - name: Install tools
@@ -330,8 +410,10 @@ jobs:
           helmfile_sha256: '${{ steps.versions.outputs.helmfile_sha256_linux_amd64 }}'
           # ko builds the snapshot-agent image (main cells only). Release cells
           # install a prebuilt binary and build no images, so skip ko — a bad ko
-          # pin or download must not fail a release cell before UAT starts.
-          install_ko: ${{ inputs.aicr_version == '' && inputs.skip_tests != true && 'true' || 'false' }}
+          # pin or download must not fail a release cell before UAT starts. The
+          # session-up/session-down lifecycles build no agent either (RUN_INSTALL
+          # false); kubectl/yq/helm above still install for every lifecycle.
+          install_ko: ${{ inputs.aicr_version == '' && inputs.skip_tests != true && env.RUN_INSTALL == 'true' && 'true' || 'false' }}
           ko_version: ${{ steps.versions.outputs.ko }}
 
       # The snapshot agent runs in-cluster as its own image, separate from the
@@ -345,7 +427,7 @@ jobs:
       # aicr-validators namespace (not the release ghcr.io/nvidia/aicr repo);
       # cleaned up below.
       - name: Build and push snapshot-agent image
-        if: inputs.aicr_version == '' && inputs.skip_tests != true && inputs.lifecycle != 'daytime-down'
+        if: inputs.aicr_version == '' && inputs.skip_tests != true && env.RUN_INSTALL == 'true'
         env:
           GOFLAGS: -mod=vendor
           KO_DOCKER_REPO: ghcr.io/nvidia/aicr-validators/agent
@@ -365,10 +447,12 @@ jobs:
           yq -i '.deployment.id = strenv(DEPLOYMENT_ID)' "$CLUSTER_CONFIG"
           cat "$CLUSTER_CONFIG"
 
-      # Bringup — skipped for daytime-down (teardown-only; nothing to provision).
+      # Bringup — provisioning lifecycles only (RUN_PROVISIONS: nightly,
+      # daytime-up, session-up). session-cell reuses the cluster session-up made;
+      # session-down / daytime-down are teardown-only.
       - name: Bringup Infra
         id: infra
-        if: inputs.lifecycle != 'daytime-down'
+        if: env.RUN_PROVISIONS == 'true'
         run: |
           set -euo pipefail
           /usr/bin/docker run \
@@ -377,14 +461,16 @@ jobs:
             -e KEY_CONTENT="$(base64 < ${{ steps.auth.outputs.credentials_file_path }})" \
             ${{ env.GKE_ACTUATOR_IMAGE }} apply
 
-      # Connect
+      # Connect. For a session-cell the cluster was provisioned by an earlier
+      # session-up run (Bringup is skipped here), so connect to the existing
+      # shared cluster by its stable session name rather than gating on infra.
       - name: Install GKE auth plugin
-        if: steps.infra.outcome == 'success'
+        if: steps.infra.outcome == 'success' || inputs.lifecycle == 'session-cell'
         run: gcloud components install gke-gcloud-auth-plugin --quiet
 
       - name: Connect to Cluster
         id: client
-        if: steps.infra.outcome == 'success'
+        if: steps.infra.outcome == 'success' || inputs.lifecycle == 'session-cell'
         shell: bash
         run: |
           set -euox pipefail
@@ -395,6 +481,32 @@ jobs:
           echo "Verifying cluster connection..."
           kubectl get nodes
 
+      # Session reuse gates (session-* lifecycles only). For a session-cell,
+      # verify the shared cluster can run THIS cell's recipe (compat) and is a
+      # valid from-scratch-install target (guard-fresh) before installing;
+      # session-up runs guard-fresh alone as a post-provision readiness sanity.
+      # Both fail closed; the implicit success() on prep/install below skips the
+      # cell when either gate fails. No-ops for non-session lifecycles.
+      - name: UAT - compat check (session cluster satisfies this recipe)
+        id: compat
+        if: steps.client.outcome == 'success' && inputs.lifecycle == 'session-cell'
+        timeout-minutes: 5
+        shell: bash
+        env:
+          AICR_BIN: ${{ github.workspace }}/aicr
+          RUN_ID: ${{ github.run_id }}
+        run: ./tests/uat/gcp/run compat "${TEST_CONFIG}"
+
+      - name: UAT - guard fresh (shared cluster is a clean install target)
+        id: guard_fresh
+        if: (inputs.lifecycle == 'session-cell' || inputs.lifecycle == 'session-up') && steps.client.outcome == 'success'
+        timeout-minutes: 10
+        shell: bash
+        env:
+          AICR_BIN: ${{ github.workspace }}/aicr
+          RUN_ID: ${{ github.run_id }}
+        run: ./tests/uat/gcp/run guard-fresh "${TEST_CONFIG}"
+
       # UAT phases — each step invokes tests/uat/gcp/run so the demo
       # (demos/cuj1-training.md) and CI stay in lockstep, and per-phase
       # failures surface as discrete steps in the GitHub Actions UI. Phases
@@ -404,7 +516,10 @@ jobs:
       # evidence reflects a fully successful run.
       - name: UAT - prep (snapshot + recipe + validate + bundle)
         id: prep
-        if: steps.client.outcome == 'success' && inputs.skip_tests != true
+        # RUN_INSTALL excludes session-up (provision + hold); the implicit
+        # success() additionally skips prep for a session-cell whose compat /
+        # guard-fresh gate failed.
+        if: steps.client.outcome == 'success' && inputs.skip_tests != true && env.RUN_INSTALL == 'true'
         timeout-minutes: 15
         shell: bash
         env:
@@ -612,6 +727,8 @@ jobs:
             echo "| Config | ${{ steps.config.outcome }} |"
             echo "| Cluster | ${{ steps.infra.outcome }} |"
             echo "| Connection | ${{ steps.client.outcome }} |"
+            echo "| Compat (session) | ${{ steps.compat.outcome }} |"
+            echo "| Guard-fresh (session) | ${{ steps.guard_fresh.outcome }} |"
             echo "| Prep | ${{ steps.prep.outcome }} |"
             echo "| Install | ${{ steps.install.outcome }} |"
             echo "| Validate (all phases) | ${{ steps.conformance.outcome }} |"
@@ -628,7 +745,7 @@ jobs:
       # Main cell only — release cells reference shared, permanent released image
       # tags and must not delete them.
       - name: Cleanup validator image
-        if: always() && inputs.aicr_version == '' && inputs.skip_tests != true && inputs.lifecycle != 'daytime-down'
+        if: always() && inputs.aicr_version == '' && inputs.skip_tests != true && env.RUN_INSTALL == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -650,6 +767,77 @@ jobs:
             fi
           done
 
+      # Session-cell cleanup (session-cell only, always). With evidence already
+      # uploaded, uninstall the AICR stack and RECYCLE the GPU nodes so the NEXT
+      # cell on this shared session cluster starts from a clean slate and a
+      # genuine from-scratch GPU-runtime deploy. Runs always() so one bad cell
+      # does not poison the batch; the next cell's guard-fresh is the backstop.
+      # session-cell NEVER tears the cluster down — session-down does that.
+      # Re-auth first: the CUJ can outlive the top-of-job WIF token, and both the
+      # kubectl uninstall and the gcloud recycle need a fresh one.
+      - name: Re-authenticate to GCP before session-cell recycle
+        id: auth_recycle
+        if: always() && inputs.lifecycle == 'session-cell' && steps.client.outcome == 'success'
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093  # v3.0.0
+        with:
+          workload_identity_provider: ${{ env.GCP_WIF_PROVIDER }}
+          service_account: ${{ env.GCP_WIF_SERVICE_ACCOUNT }}
+
+      - name: UAT - uninstall (helmfile destroy + sweep)
+        id: uninstall
+        if: always() && inputs.lifecycle == 'session-cell' && steps.client.outcome == 'success'
+        timeout-minutes: 15
+        shell: bash
+        env:
+          AICR_BIN: ${{ github.workspace }}/aicr
+          RUN_ID: ${{ github.run_id }}
+        run: ./tests/uat/gcp/run uninstall "${TEST_CONFIG}"
+
+      - name: UAT - recycle GPU nodes (clean-boot replacements for the next cell)
+        id: recycle
+        if: always() && inputs.lifecycle == 'session-cell' && steps.client.outcome == 'success'
+        # MIG delete + recreate + node bootstrap; the recycle
+        # script's own RECYCLE_TIMEOUT_SECONDS (15m) sits under this step cap.
+        # Invoked through the runner (like every other phase) so the sequence is
+        # locally reproducible; the runner's cloud_recycle_gpu_nodes hook derives
+        # the expected node count from the LIVE cluster rather than a
+        # cloud-specific cluster-config path.
+        timeout-minutes: 20
+        shell: bash
+        env:
+          AICR_BIN: ${{ github.workspace }}/aicr
+          RUN_ID: ${{ github.run_id }}
+          AICR_UAT_CLUSTER: ${{ env.DEPLOYMENT_ID }}
+        run: ./tests/uat/gcp/run recycle "${TEST_CONFIG}"
+
+      # Session-cell hygiene outcomes. The main Test Summary step above runs
+      # BEFORE uninstall/recycle (so evidence is persisted before the slow
+      # teardown work), which means it can never render their results. Append
+      # them here so a poisoned session cluster is diagnosable from the summary
+      # instead of only from the raw log of the PREVIOUS cell.
+      - name: Session cleanup summary
+        if: always() && inputs.lifecycle == 'session-cell' && steps.client.outcome == 'success'
+        env:
+          SUMMARY_SESSION_ID: ${{ inputs.session_id }}
+        run: |
+          {
+            echo ""
+            echo "### Session-cell cleanup"
+            printf '**Session cluster:** `%s` (session_id: `%s`)\n\n' "$DEPLOYMENT_ID" "$SUMMARY_SESSION_ID"
+            echo "| Step | Status |"
+            echo "|------|--------|"
+            echo "| Uninstall (helmfile destroy + sweep) | ${{ steps.uninstall.outcome }} |"
+            echo "| Recycle GPU nodes | ${{ steps.recycle.outcome }} |"
+            if [[ "${{ steps.uninstall.outcome }}" != "success" || "${{ steps.recycle.outcome }}" != "success" ]]; then
+              echo ""
+              echo "> [!WARNING]"
+              echo "> Cleanup did not complete, so the shared session cluster may be dirty."
+              echo "> Later cells in this batch will fail their freshness guard until it is"
+              echo "> reprovisioned — treat their failures as fallout from THIS cell, not as"
+              echo "> regressions in the versions they tested."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
       # Re-authenticate to GCP immediately before teardown. The WIF credential
       # file written by the `Authenticate to GCP` step at the top of the job
       # references a short-lived GitHub OIDC token; the UAT phases can run the
@@ -669,6 +857,7 @@ jobs:
         if: >-
           always() && (
             inputs.lifecycle == 'daytime-down' ||
+            inputs.lifecycle == 'session-down' ||
             (inputs.lifecycle == 'nightly' && inputs.skip_delete != true && steps.infra.outcome != 'skipped')
           )
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093  # v3.0.0
@@ -682,6 +871,7 @@ jobs:
         if: >-
           always() && (
             inputs.lifecycle == 'daytime-down' ||
+            inputs.lifecycle == 'session-down' ||
             (inputs.lifecycle == 'nightly' && inputs.skip_delete != true && steps.infra.outcome != 'skipped')
           )
         shell: bash

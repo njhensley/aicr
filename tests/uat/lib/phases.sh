@@ -42,6 +42,19 @@
 #   debug        snapshot live cluster state into cluster-debug/ (nodes, taints,
 #                events, operator CRs incl. Skyhook status, operator/check-Job
 #                logs) — best-effort, run on failure BEFORE teardown
+#   compat       (session reuse) resolve the recipe and check its
+#                K8s.server.version constraint against the live cluster; exit 3
+#                = incompatible (caller fails the cell; see docs)
+#   guard-fresh  (session reuse) fail closed unless the shared cluster is a
+#                valid from-scratch target (gpu-worker nodes Ready, no node
+#                advertises nvidia.com/gpu)
+#   uninstall    (session reuse) helmfile destroy + sweep so the next cell on a
+#                shared session cluster installs from a clean slate
+#   recycle      (session reuse) replace the GPU nodes with clean-boot instances
+#                via the per-cloud cloud_recycle_gpu_nodes hook (fails closed)
+#   session-cell (session reuse) the whole between-provision cell in order:
+#                compat -> guard-fresh -> prep -> install -> conformance -> CUJ
+#                -> verify -> uninstall -> recycle (for local reproduction)
 #   all          run every phase in order (for local reproduction); the CUJ
 #                phase is chosen by the config's recipe intent — `train` for
 #                training, `serve` for inference
@@ -114,6 +127,40 @@ SERVE_FRONTEND_PORT="${SERVE_FRONTEND_PORT:-8000}"
 SERVE_READY_TIMEOUT_SECONDS="${SERVE_READY_TIMEOUT_SECONDS:-1800}" # 30 min
 SERVE_REQUEST_TIMEOUT_SECONDS="${SERVE_REQUEST_TIMEOUT_SECONDS:-120}" # 2 min
 
+# Single-cluster reuse (session mode) knobs. A reuse-enabled nightly batch runs
+# many (version x intent) cells against ONE cluster; between cells
+# phase_uninstall tears the AICR stack down (bounded by these) so the next cell
+# installs from a clean slate, and phase_guard_fresh / phase_compat gate the
+# reuse. The GPU-node recycle itself is cloud-specific and lives in
+# .github/scripts/uat-<cloud>-recycle-gpu.sh, not here.
+UNINSTALL_TIMEOUT_SECONDS="${UNINSTALL_TIMEOUT_SECONDS:-600}"          # 10 min (helmfile destroy)
+NAMESPACE_DELETE_TIMEOUT_SECONDS="${NAMESPACE_DELETE_TIMEOUT_SECONDS:-300}" # 5 min (finalizer drain)
+# Budget for phase_guard_fresh to poll the shared cluster into a clean
+# from-scratch state — a freshly provisioned (session-up) or freshly recycled
+# (between-cell) GPU pool may still be joining, and a just-terminated old node
+# object can linger NotReady for a moment. Fails closed if it never converges.
+GUARD_TIMEOUT_SECONDS="${GUARD_TIMEOUT_SECONDS:-300}" # 5 min
+# The clean state must hold this many consecutive observations before
+# phase_guard_fresh certifies it. One observation cannot distinguish "clean" from
+# "a surviving DaemonSet has not been rescheduled onto the new nodes yet" — the
+# same reason phase_install requires READINESS_CONSECUTIVE_PASSES.
+GUARD_CONSECUTIVE_PASSES="${GUARD_CONSECUTIVE_PASSES:-2}"
+# Opt-in: also require that NO node advertises allocatable nvidia.com/gpu. Only
+# valid where AICR owns the device plugin. GKE (gpuDriverInstallation: DEFAULT)
+# and AKS (gpuDriverInstall: true) have the PLATFORM install the driver and its
+# own device-plugin DaemonSet, so a freshly recycled node advertises the resource
+# with zero AICR components installed and the gate would never converge there.
+# The AWS runner opts in (see tests/uat/aws/run); the default is off.
+GUARD_REQUIRE_NO_GPU_ADVERTISED="${GUARD_REQUIRE_NO_GPU_ADVERTISED:-false}"
+# Exit code phase_compat uses to signal "this reservation's cluster shape cannot
+# satisfy this cell's recipe" — distinct from a generic error (1) for clarity in
+# local reproduction. The pipeline treats any non-zero compat exit as a hard CELL
+# FAILURE: there is no reprovision path (the reservation has a single
+# cluster-config, so a dedicated cluster would be the same shape and equally
+# incompatible), so the cost of failing closed here is a failed cell, which is
+# the same outcome a per-cell run would reach on a genuine incompatibility.
+COMPAT_EXIT_INCOMPATIBLE=3
+
 # cloud_refresh_credentials: hook to refresh cloud credentials mid-run. Default
 # no-op — AWS/GCP sessions either outlast the job or are refreshed by the
 # workflow (configure-aws-credentials / google-github-actions/auth). Azure's
@@ -123,6 +170,17 @@ SERVE_REQUEST_TIMEOUT_SECONDS="${SERVE_REQUEST_TIMEOUT_SECONDS:-120}" # 2 min
 # collection. Must return non-zero on failure so the gate's timer only advances
 # on a successful refresh.
 cloud_refresh_credentials() { :; }
+
+# cloud_recycle_gpu_nodes: hook that replaces the GPU nodes with clean-boot ones
+# between cells on a shared session cluster. Cloud-specific by nature (EKS ASG
+# terminate / GKE MIG recreate / AKS VMSS reimage), so each per-cloud runner
+# overrides it (tests/uat/<cloud>/run) — mirroring cloud_refresh_credentials.
+# The default FAILS CLOSED: a cloud without an implementation must not silently
+# skip the recycle and let the next cell validate a pre-tuned GPU pool.
+cloud_recycle_gpu_nodes() {
+  echo "::error::no GPU-node recycle implementation for this cloud; refusing to continue (the next cell would install onto already-tuned nodes and could record a false pass)" >&2
+  return 1
+}
 
 # How often the readiness gate calls cloud_refresh_credentials. Effectively-never
 # by default (AWS/GCP need no mid-gate refresh); Azure's runner lowers it.
@@ -782,6 +840,415 @@ EOF
   echo "::endgroup::"
 }
 
+# ---------------------------------------------------------------------------
+# Single-cluster reuse phases (session mode). When a reservation opts into
+# nightly-reuse-cluster, ONE cluster is provisioned per batch and every
+# (version x intent) cell runs against it. Between cells the AICR stack must be
+# uninstalled and the GPU nodes recycled, and before each cell installs the
+# cluster must be proven a valid from-scratch target — otherwise a cell would
+# validate an already-converged stack and record a FALSE pass. These phases
+# codify the software side (uninstall / freshness proof / k8s compatibility);
+# the cloud-specific GPU-node recycle + node-freshness proof live in
+# .github/scripts/uat-<cloud>-recycle-gpu.sh.
+# ---------------------------------------------------------------------------
+
+# ns_is_protected reports (exit 0) whether a namespace must never be deleted by
+# the uninstall sweep. The candidate list is bundle-derived (helmfile), but a
+# component chart could render into a cloud-managed namespace, so this is an
+# explicit refusal set rather than a best-effort filter: system namespaces, and
+# the cloud add-on prefixes each provider reconciles on its own.
+ns_is_protected() {
+  local ns="$1"
+  case "${ns}" in
+    default|kube-system|kube-public|kube-node-lease) return 0 ;;
+    kube-*|gke-*|gmp-*|gatekeeper-*|calico-*|tigera-*|azure-*|aks-*|kalico-*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# phase_uninstall removes the AICR-deployed stack so the next cell installs from
+# a clean slate:
+#
+#   1. the gpu-operator ClusterPolicy is deleted FIRST, while the operator that
+#      owns its finalizer is still running (deleting it after `helmfile destroy`
+#      leaves the CR wedged in Terminating forever, which then blocks the next
+#      gpu-operator install — the exact orphan this step exists to prevent);
+#   2. `helmfile destroy` removes the helm releases;
+#   3. cluster-scoped residue helm never reaps (webhook configurations,
+#      APIServices) is swept by helm's own ownership labels — a leaked webhook
+#      whose backing Service is gone rejects cluster-wide creates on the next
+#      install;
+#   4. the release namespaces are deleted to reap StatefulSet PVCs.
+#
+# Sweep failures are surfaced (not silently swallowed) and phase_guard_fresh is
+# the fail-closed backstop that refuses to install onto a dirty cluster.
+phase_uninstall() {
+  command -v helmfile >/dev/null || { echo "helmfile not on PATH" >&2; exit 1; }
+  if [[ ! -f bundle/helmfile.yaml ]]; then
+    # A cell that failed before prep produced no bundle and deployed nothing;
+    # the recycle + guard still run, so the next cell starts clean regardless.
+    echo "no bundle/helmfile.yaml in ${PWD}; nothing to helmfile-destroy (run prep first)"
+    return 0
+  fi
+
+  # Capture release namespaces BEFORE destroy so leftover StatefulSet PVCs can
+  # be reaped afterward (helm uninstall does not delete them). A FAILURE to
+  # enumerate must be loud: silently yielding an empty list would skip the whole
+  # namespace/PVC sweep while the phase still reported success.
+  local namespaces=() helmfile_json="" list_rc=0
+  helmfile_json="$( ( cd bundle && helmfile list --output json ) 2>/dev/null )" || list_rc=$?
+  if (( list_rc != 0 )) || [[ -z "${helmfile_json}" ]]; then
+    echo "::warning::could not enumerate helm releases (helmfile list rc=${list_rc}); the namespace/PVC sweep will be skipped and guard-fresh must catch any residue" >&2
+  else
+    mapfile -t namespaces < <(jq -r '.[].namespace // empty' <<<"${helmfile_json}" | sort -u)
+  fi
+
+  # (1) ClusterPolicy BEFORE destroy, while the operator can process its
+  # finalizer. Guarded on the CRD's presence so it no-ops when gpu-operator was
+  # never installed.
+  if kubectl get crd clusterpolicies.nvidia.com >/dev/null 2>&1; then
+    echo "::group::Delete gpu-operator ClusterPolicy (pre-destroy, operator still running)"
+    kubectl delete clusterpolicies.nvidia.com --all --ignore-not-found --timeout=120s \
+      || echo "::warning::ClusterPolicy delete did not complete; a finalizer strip is attempted after destroy"
+    echo "::endgroup::"
+  fi
+
+  # (2) Remove the releases.
+  echo "::group::helmfile destroy"
+  ( cd bundle && timeout "${UNINSTALL_TIMEOUT_SECONDS}" helmfile destroy ) \
+    || echo "::warning::helmfile destroy returned non-zero; continuing to explicit sweep (guard-fresh fails closed if the cluster is not clean)"
+  echo "::endgroup::"
+
+  # Backstop: if a ClusterPolicy still exists after destroy its finalizer can no
+  # longer be processed (the operator is gone), so strip it explicitly rather
+  # than leaving a Terminating singleton that blocks the next install.
+  if kubectl get crd clusterpolicies.nvidia.com >/dev/null 2>&1; then
+    local stuck
+    stuck="$(kubectl get clusterpolicies.nvidia.com -o name 2>/dev/null || true)"
+    if [[ -n "${stuck}" ]]; then
+      echo "::group::Strip orphaned ClusterPolicy finalizers"
+      while IFS= read -r cp; do
+        [[ -z "${cp}" ]] && continue
+        echo "stripping finalizers from ${cp} (operator no longer running to process them)"
+        kubectl patch "${cp}" --type=merge -p '{"metadata":{"finalizers":[]}}' || true
+        kubectl delete "${cp}" --ignore-not-found --timeout=60s || true
+      done <<<"${stuck}"
+      echo "::endgroup::"
+    fi
+  fi
+
+  # (3) Cluster-scoped residue helm leaves behind. Selected by helm's OWN
+  # ownership labels/annotations and restricted to this bundle's release
+  # namespaces, so nothing outside what AICR deployed is ever targeted.
+  if (( ${#namespaces[@]} > 0 )); then
+    echo "::group::Sweep cluster-scoped residue (webhooks, APIServices)"
+    local ns_filter kind obj
+    ns_filter="$(printf '%s\n' "${namespaces[@]}" | jq -R . | jq -cs .)"
+    for kind in validatingwebhookconfigurations mutatingwebhookconfigurations apiservices; do
+      while IFS= read -r obj; do
+        [[ -z "${obj}" ]] && continue
+        echo "deleting ${kind}/${obj} (helm-owned, release namespace in this bundle)"
+        kubectl delete "${kind}" "${obj}" --ignore-not-found --timeout=60s || true
+      done < <(kubectl get "${kind}" \
+                 -l app.kubernetes.io/managed-by=Helm -o json 2>/dev/null \
+               | jq -r --argjson ns "${ns_filter}" \
+                   '.items[]? | select((.metadata.annotations["meta.helm.sh/release-namespace"] // "") as $rns | $ns | index($rns)) | .metadata.name' \
+                 2>/dev/null || true)
+    done
+    echo "::endgroup::"
+  fi
+
+  # (4) Delete the release namespaces to reap StatefulSet PVCs and any namespaced
+  # residue, bounded so a stuck finalizer cannot hang the phase past its budget.
+  # Protected namespaces are refused explicitly (see ns_is_protected).
+  if (( ${#namespaces[@]} > 0 )); then
+    local deletable=() ns
+    for ns in "${namespaces[@]}"; do
+      if ns_is_protected "${ns}"; then
+        echo "::warning::refusing to delete protected namespace ${ns} (a chart rendered into it); sweep it by hand if it holds AICR residue"
+        continue
+      fi
+      deletable+=("${ns}")
+    done
+    if (( ${#deletable[@]} > 0 )); then
+      echo "::group::Delete release namespaces (${deletable[*]})"
+      kubectl delete namespace "${deletable[@]}" --ignore-not-found \
+        --timeout="${NAMESPACE_DELETE_TIMEOUT_SECONDS}s" \
+        || echo "::warning::namespace deletion did not finish within budget; guard-fresh will assess residue"
+      echo "::endgroup::"
+    fi
+  fi
+}
+
+# phase_guard_fresh FAILS CLOSED unless the shared session cluster is a valid
+# from-scratch-install target. It asserts AICR-OWNED state rather than a derived
+# platform signal:
+#
+#   * the gpu-worker nodes are present and Ready;
+#   * no helm releases survive in the bundle's release namespaces;
+#   * no gpu-operator ClusterPolicy CR exists (a Terminating one blocks install);
+#   * no nvidia device-plugin / driver DaemonSet pods are still running outside
+#     the platform's own namespaces.
+#
+# It deliberately does NOT key on `allocatable["nvidia.com/gpu"]` by default.
+# That signal only proves "the AICR GPU stack is down" on clouds where AICR owns
+# the device plugin: GKE (`gpuDriverInstallation: DEFAULT`) and AKS
+# (`gpuDriverInstall: true`) have the PLATFORM install the driver and its own
+# device-plugin DaemonSet, so a freshly provisioned or freshly recycled node
+# advertises nvidia.com/gpu with zero AICR components installed and the gate
+# would never converge. A cloud whose runner knows the platform ships no device
+# plugin opts the stricter check in via GUARD_REQUIRE_NO_GPU_ADVERTISED=true
+# (see tests/uat/aws/run), mirroring the cloud_refresh_credentials hook pattern.
+#
+# The clean state must hold for GUARD_CONSECUTIVE_PASSES consecutive
+# observations: a single observation cannot distinguish "clean" from "the
+# leftover DaemonSet has not been rescheduled onto the new nodes yet", the same
+# reason phase_install requires consecutive readiness passes.
+#
+# (Node-level freshness — that the GPU nodes were replaced with clean-boot
+# instances, clearing driver/kernel tuning — is asserted by the recycle script;
+# this phase asserts the SOFTWARE side, portably across clouds.)
+phase_guard_fresh() {
+  echo "::group::Freshness guard"
+  local deadline=$(( SECONDS + GUARD_TIMEOUT_SECONDS ))
+  local nodes_json gpu_nodes ready_gpu gpu_advertised releases clusterpolicies plugin_pods
+  local streak=0 reason=""
+  while :; do
+    reason=""
+    # A transient API error must not abort the phase: the retry loop exists to
+    # ride out exactly this, so treat a failed read as "not yet" and re-poll.
+    if ! nodes_json="$(kubectl get nodes -o json 2>/dev/null)"; then
+      reason="kubectl get nodes failed (transient?)"
+      nodes_json=""
+    fi
+
+    if [[ -z "${reason}" ]]; then
+      # Every UAT cluster-config labels its GPU pool nodeGroup=gpu-worker.
+      gpu_nodes="$(jq '[.items[] | select(.metadata.labels["nodeGroup"] == "gpu-worker")] | length' <<<"${nodes_json}")"
+      ready_gpu="$(jq '[.items[] | select(.metadata.labels["nodeGroup"] == "gpu-worker") | select(.status.conditions[]? | select(.type == "Ready" and .status == "True"))] | length' <<<"${nodes_json}")"
+      if (( gpu_nodes < 1 )); then
+        reason="no gpu-worker nodes present"
+      elif [[ "${ready_gpu}" != "${gpu_nodes}" ]]; then
+        reason="gpu-worker Ready ${ready_gpu}/${gpu_nodes}"
+      fi
+    fi
+
+    # No surviving helm releases anywhere outside the platform namespaces. This
+    # is the portable, AICR-owned proof that the stack is gone.
+    if [[ -z "${reason}" ]]; then
+      releases="$(helm list -A -o json 2>/dev/null \
+        | jq -r '[.[]? | select(.namespace | test("^(kube-|gke-|gmp-|calico-|tigera-|azure-|aks-|default$)") | not) | .name] | length' 2>/dev/null || echo "unknown")"
+      if [[ "${releases}" == "unknown" ]]; then
+        reason="could not list helm releases (transient?)"
+      elif [[ "${releases}" != "0" ]]; then
+        reason="${releases} helm release(s) still installed"
+      fi
+    fi
+
+    # A ClusterPolicy (even Terminating) blocks the next gpu-operator install.
+    if [[ -z "${reason}" ]] && kubectl get crd clusterpolicies.nvidia.com >/dev/null 2>&1; then
+      clusterpolicies="$(kubectl get clusterpolicies.nvidia.com -o name 2>/dev/null | grep -c . || true)"
+      if [[ "${clusterpolicies}" != "0" ]]; then
+        reason="${clusterpolicies} gpu-operator ClusterPolicy CR(s) still present"
+      fi
+    fi
+
+    # Any surviving AICR-deployed device-plugin/driver pod means the runtime is
+    # still up even if it has not yet re-advertised the resource.
+    if [[ -z "${reason}" ]]; then
+      plugin_pods="$(kubectl get pods -A -o json 2>/dev/null \
+        | jq -r '[.items[]? | select(.metadata.namespace | test("^(kube-|gke-|gmp-|calico-|tigera-|azure-|aks-)") | not) | select(.metadata.name | test("nvidia-device-plugin|nvidia-driver-daemonset|gpu-feature-discovery"))] | length' 2>/dev/null || echo "0")"
+      if [[ "${plugin_pods}" != "0" ]]; then
+        reason="${plugin_pods} AICR GPU runtime pod(s) still running"
+      fi
+    fi
+
+    # Opt-in strict check for clouds where the platform ships no device plugin.
+    if [[ -z "${reason}" && "${GUARD_REQUIRE_NO_GPU_ADVERTISED}" == "true" && -n "${nodes_json}" ]]; then
+      gpu_advertised="$(jq '[.items[] | select(.status.allocatable["nvidia.com/gpu"] != null)] | length' <<<"${nodes_json}")"
+      if [[ "${gpu_advertised}" != "0" ]]; then
+        reason="${gpu_advertised} node(s) still advertise nvidia.com/gpu"
+      fi
+    fi
+
+    if [[ -z "${reason}" ]]; then
+      streak=$(( streak + 1 ))
+      if (( streak >= GUARD_CONSECUTIVE_PASSES )); then
+        echo "freshness guard passed: ${gpu_nodes} gpu-worker node(s) Ready, AICR GPU runtime not deployed (${streak} consecutive clean observations)"
+        echo "::endgroup::"
+        return 0
+      fi
+      echo "cluster looks clean (${streak}/${GUARD_CONSECUTIVE_PASSES} consecutive); re-checking in 15s..."
+    else
+      # Any regression invalidates the streak — the cluster must be STABLY clean.
+      if (( streak > 0 )); then
+        echo "clean streak broken after ${streak} observation(s): ${reason}"
+      fi
+      streak=0
+      echo "cluster not yet a clean from-scratch target (${reason}); retrying in 15s..."
+    fi
+
+    if (( SECONDS >= deadline )); then
+      echo "::error::freshness guard: cluster is not a stably clean from-scratch target within ${GUARD_TIMEOUT_SECONDS}s (last: ${reason:-clean but only ${streak}/${GUARD_CONSECUTIVE_PASSES} consecutive}); refusing to install (would risk a false pass or an unready pool)" >&2
+      kubectl get nodes -o wide --show-labels >&2 || true
+      helm list -A >&2 || true
+      echo "::endgroup::"
+      exit 1
+    fi
+    sleep 15
+  done
+}
+
+# k8s_version_normalize strips a leading v and any pre-release/build suffix
+# ("v1.35.0-eks-abc" -> "1.35.0") and pads to X.Y.Z so a 2-component constraint
+# token (">= 1.32", "1.35") compares cleanly against a 3-component cluster
+# version ("1.35.0"): missing minor/patch components default to 0.
+k8s_version_normalize() {
+  local v="${1#v}"
+  v="${v%%-*}"  # drop -eks... / -gke... / pre-release
+  v="${v%%+*}"  # drop +build metadata
+  local maj min pat IFS=.
+  read -r maj min pat _ <<<"${v}"
+  printf '%s.%s.%s' "${maj:-0}" "${min:-0}" "${pat:-0}"
+}
+
+# k8s_version_cmp prints -1 / 0 / 1 for a<b / a==b / a>b using version sort.
+k8s_version_cmp() {
+  local a b
+  a="$(k8s_version_normalize "$1")"
+  b="$(k8s_version_normalize "$2")"
+  if [[ "${a}" == "${b}" ]]; then printf '0'; return; fi
+  if [[ "$(printf '%s\n%s\n' "${a}" "${b}" | sort -V | head -n1)" == "${a}" ]]; then
+    printf -- '-1'
+  else
+    printf '1'
+  fi
+}
+
+# k8s_version_satisfies_clause reports (exit 0/1) whether cluster version $1
+# satisfies ONE semver clause $2 (">= 1.32", "!= 1.34", "1.35", ...). The
+# operator set mirrors pkg/constraints (GTE, LTE, GT, LT, EQ, NE, exact) so the
+# bash gate and the Go evaluator agree on every operator a recipe can express.
+# An unrecognized operator (~, ^, x-ranges) returns non-zero -> fail closed.
+k8s_version_satisfies_clause() {
+  local ver="$1" clause op want cmp
+  clause="$(printf '%s' "$2" | tr -s '[:space:]' ' ')"
+  clause="${clause# }"
+  clause="${clause% }"
+  case "${clause}" in
+    ">="*) op=">="; want="${clause#>=}" ;;
+    "<="*) op="<="; want="${clause#<=}" ;;
+    "!="*) op="!="; want="${clause#!=}" ;;
+    ">"*)  op=">";  want="${clause#>}" ;;
+    "<"*)  op="<";  want="${clause#<}" ;;
+    "=="*) op="=";  want="${clause#==}" ;;
+    "="*)  op="=";  want="${clause#=}" ;;
+    [0-9v]*) op="="; want="${clause}" ;;
+    *) return 1 ;;  # unknown operator -> fail closed
+  esac
+  want="${want//[[:space:]]/}"
+  # Only a bare vX[.Y[.Z]] token is evaluable; anything else (an x-range,
+  # garbage) is unsupported -> fail closed.
+  [[ "${want}" =~ ^v?[0-9]+(\.[0-9]+){0,2}$ ]] || return 1
+  cmp="$(k8s_version_cmp "${ver}" "${want}")"
+  case "${op}" in
+    ">=") [[ "${cmp}" != "-1" ]] ;;
+    ">")  [[ "${cmp}" == "1" ]] ;;
+    "<=") [[ "${cmp}" != "1" ]] ;;
+    "<")  [[ "${cmp}" == "-1" ]] ;;
+    "=")  [[ "${cmp}" == "0" ]] ;;
+    "!=") [[ "${cmp}" != "0" ]] ;;
+    *) return 1 ;;
+  esac
+}
+
+# k8s_version_satisfies reports (exit 0/1) whether cluster version $1 satisfies
+# constraint $2. A COMPOUND constraint (comma-joined clauses, e.g.
+# ">= 1.32, < 1.36") is satisfied only when EVERY clause is — matching the
+# conjunction semantics of the Go evaluator — so a legitimate range no longer
+# hard-fails the cell. An empty constraint, or any clause with an unsupported
+# operator, returns non-zero -> fail closed (the caller fails the cell rather
+# than reusing a cluster it could not prove compatible).
+k8s_version_satisfies() {
+  local ver="$1" constraint="$2" clause
+  [[ -z "${constraint//[[:space:]]/}" ]] && return 1
+  local IFS=','
+  for clause in ${constraint}; do
+    [[ -z "${clause//[[:space:]]/}" ]] && continue
+    k8s_version_satisfies_clause "${ver}" "${clause}" || return 1
+  done
+  return 0
+}
+
+# phase_compat decides whether the shared session cluster satisfies THIS cell's
+# recipe. It resolves the recipe (criteria -> constraints) and compares the
+# recipe's K8s.server.version constraint against the live cluster's server
+# version. Exit 0 = compatible (reuse the session cluster); exit
+# COMPAT_EXIT_INCOMPATIBLE = incompatible — the pipeline fails the cell (a
+# genuine incompatibility signal; the reservation's single cluster-config could
+# not be reprovisioned into a satisfying shape anyway). FAILS CLOSED to
+# incompatible on any ambiguity.
+phase_compat() {
+  echo "::group::Resolve recipe for compatibility check"
+  "${AICR_BIN}" recipe --config "${config}"
+  test -f recipe.yaml
+  echo "::endgroup::"
+
+  # Read the constraint WITHOUT swallowing yq's stderr: a malformed recipe.yaml
+  # must not silently read as "no constraint declared", which would pass the gate
+  # (fail OPEN) in a function whose whole contract is fail-closed.
+  local constraints=() cluster_ver constraint yq_rc=0 yq_out=""
+  yq_out="$(yq -r '.constraints[]? | select(.name == "K8s.server.version") | .value' recipe.yaml)" || yq_rc=$?
+  if (( yq_rc != 0 )); then
+    echo "::error::could not read constraints from recipe.yaml (yq rc=${yq_rc}); failing closed" >&2
+    exit "${COMPAT_EXIT_INCOMPATIBLE}"
+  fi
+  mapfile -t constraints < <(grep -v '^null$' <<<"${yq_out}" | grep -v '^$' || true)
+
+  cluster_ver="$(kubectl version -o json 2>/dev/null | jq -r '.serverVersion.gitVersion // empty')"
+
+  if (( ${#constraints[@]} == 0 )); then
+    echo "recipe declares no K8s.server.version constraint — session cluster is compatible"
+    return 0
+  fi
+  # Recipe merging collapses same-named constraints, so >1 here means the
+  # resolver changed shape. Picking one (previously `head -n1`) could silently
+  # evaluate the LAXER of two and reuse a cluster the stricter one forbids —
+  # fail closed instead.
+  if (( ${#constraints[@]} > 1 )); then
+    echo "::error::recipe declares ${#constraints[@]} K8s.server.version constraints (${constraints[*]}); expected exactly one after merge — failing closed rather than guessing which applies" >&2
+    exit "${COMPAT_EXIT_INCOMPATIBLE}"
+  fi
+  constraint="${constraints[0]}"
+  echo "recipe K8s.server.version constraint: '${constraint}'; cluster server version: '${cluster_ver:-<unknown>}'"
+
+  if [[ -z "${cluster_ver}" ]]; then
+    echo "::error::could not read cluster server version; failing closed" >&2
+    exit "${COMPAT_EXIT_INCOMPATIBLE}"
+  fi
+  if k8s_version_satisfies "${cluster_ver}" "${constraint}"; then
+    echo "session cluster ${cluster_ver} satisfies '${constraint}' — compatible"
+    return 0
+  fi
+  echo "::error::session cluster ${cluster_ver} does NOT satisfy recipe constraint '${constraint}' — this reservation's cluster shape cannot run this cell (genuine incompatibility); failing the cell" >&2
+  exit "${COMPAT_EXIT_INCOMPATIBLE}"
+}
+
+# phase_recycle replaces the GPU nodes with clean-boot instances between cells on
+# a shared session cluster, via the per-cloud cloud_recycle_gpu_nodes hook. The
+# value of the UAT is validating a FROM-SCRATCH GPU-runtime deploy (driver
+# install, skyhook tuning, and the reboots they trigger); a node the previous
+# cell already tuned would let the readiness gate pass trivially — a false pass.
+phase_recycle() {
+  echo "::group::Recycle GPU nodes"
+  if ! cloud_recycle_gpu_nodes; then
+    echo "::error::GPU-node recycle failed; the session cluster is NOT a valid target for the next cell" >&2
+    echo "::endgroup::"
+    exit 1
+  fi
+  echo "::endgroup::"
+}
+
 phase_verify() {
   echo "::group::Bootstrap Sigstore TUF root"
   "${AICR_BIN}" trust update
@@ -833,7 +1300,7 @@ uat_main() {
 
   if [[ -z "${phase}" || -z "${config}" ]]; then
     echo "Usage: $0 <phase> <test-config.yaml>" >&2
-    echo "Phases: prep | install | conformance | train | serve | verify | debug | all" >&2
+    echo "Phases: prep | install | conformance | train | serve | verify | debug | compat | guard-fresh | uninstall | recycle | session-cell | all" >&2
     exit 2
   fi
 
@@ -852,6 +1319,21 @@ uat_main() {
     train)       phase_train ;;
     serve)       phase_serve ;;
     verify)      phase_verify ;;
+    compat)      phase_compat ;;
+    guard-fresh) phase_guard_fresh ;;
+    uninstall)   phase_uninstall ;;
+    recycle)     phase_recycle ;;
+    session-cell)
+      # The full between-provision cell a reuse batch runs against a shared
+      # session cluster, in order — the local-reproduction counterpart of `all`.
+      phase_compat; phase_guard_fresh; phase_prep; phase_install; phase_conformance
+      intent="$(yq -r '.spec.recipe.criteria.intent // "training"' "${config}")"
+      case "${intent}" in
+        inference) phase_serve ;;
+        *)         phase_train ;;
+      esac
+      phase_verify; phase_uninstall; phase_recycle
+      ;;
     debug)
       # Refresh cloud credentials first (no-op on AWS/GCP; Azure redeems a fresh
       # federated session). A failure that surfaces after a long phase can leave a
@@ -875,7 +1357,7 @@ uat_main() {
       ;;
     *)
       echo "unknown phase: ${phase}" >&2
-      echo "Phases: prep | install | conformance | train | serve | verify | debug | all" >&2
+      echo "Phases: prep | install | conformance | train | serve | verify | debug | compat | guard-fresh | uninstall | recycle | session-cell | all" >&2
       exit 2
       ;;
   esac

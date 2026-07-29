@@ -90,4 +90,27 @@ az_federated_relogin() {
 CLOUD_REFRESH_INTERVAL_SECONDS="${AZ_RELOGIN_INTERVAL_SECONDS}"
 cloud_refresh_credentials() { az_federated_relogin; }
 
+# Recycle the GPU nodes between cells on a shared session cluster (session mode).
+# Implements the cloud_recycle_gpu_nodes hook from tests/uat/lib/phases.sh so the
+# `recycle` phase is reachable through this runner like every other phase.
+#
+# EXPECTED is derived from the LIVE cluster (the same nodeGroup=gpu-worker label
+# the recycle script selects on) rather than from a cloud-specific cluster-config
+# path, so a pool rename or a schema change cannot silently desynchronise the
+# count from the nodes actually being replaced.
+cloud_recycle_gpu_nodes() {
+  local expected script_dir repo_root cluster
+  # Explicit message rather than a bare `set -u` "unbound variable": the caller
+  # (the workflow recycle step) must export the session cluster name.
+  cluster="${AICR_UAT_CLUSTER:?Set AICR_UAT_CLUSTER to the cluster whose GPU nodes should be recycled}"
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  repo_root="${script_dir}/../../.."
+  expected="$(kubectl get nodes -l nodeGroup=gpu-worker --no-headers 2>/dev/null | wc -l | tr -d ' ')"
+  if [[ -z "${expected}" || "${expected}" == "0" ]]; then
+    echo "::error::no gpu-worker nodes visible; refusing to recycle (cannot prove replacements later)" >&2
+    return 1
+  fi
+  "${repo_root}/.github/scripts/uat-azure-recycle-gpu.sh" "${cluster}" "${expected}"
+}
+
 uat_main "$@"

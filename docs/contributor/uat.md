@@ -86,15 +86,80 @@ Semantics: **`main` is never gated** (it is built from source and carries the ne
 
 ## Cluster lifecycles
 
-The `lifecycle` input selects one of three cluster lifecycles, all sharing the reservation lease:
+The `lifecycle` input selects one of six cluster lifecycles, all sharing the reservation lease:
 
 | Lifecycle | Cluster name | Provisions | Deploys | CUJ | Teardown at job end |
 |-----------|--------------|-----------|---------|-----|---------------------|
-| `nightly` (default) | `aicr-uat-<run_id>` (AWS) / `aicr-<run_id>` (GCP) — run-scoped | yes | yes | yes (prep→install→validate→train\|serve→verify; the serve step is disabled pending #1644) | yes (unless `skip_delete`) |
-| `daytime-up` | `aicr-uat-day-<reservation>` (AWS) / `aicr-day-<reservation>` (GCP) — **stable** | yes | yes (prep→install) | no | **no — holds** |
+| `nightly` (default) | `aicr-uat-<run_id>` (AWS) / `aicr-<run_id>` (GCP/Azure) — run-scoped | yes | yes | yes (prep→install→validate→train\|serve→verify; the serve step is disabled pending #1644) | yes (unless `skip_delete`) |
+| `daytime-up` | `aicr-uat-day-<reservation>` (AWS) / `aicr-day-<reservation>` (GCP/Azure) — **stable** | yes | yes (prep→install) | no | **no — holds** |
 | `daytime-down` | same stable name | no | no | no | yes (tears down the held cluster) |
+| `session-up` | `aicr-uat-sess-<session_id>` (AWS) / `aicr-sess-<session_id>` (GCP/Azure) — **unique per batch** | yes | no | no | **no — holds** |
+| `session-cell` | same session name | no (reuses it) | yes | yes (compat→guard-fresh→prep→install→validate→CUJ→verify, then **uninstall + recycle GPU nodes**) | no |
+| `session-down` | same session name | no | no | no | yes (tears down the shared cluster) |
 
-The nightly per-run name isolates concurrent history (OCI tags, Terraform state) per run. The daytime name is **stable and reservation-tagged** so the evening `daytime-down` teardown and the nightly pre-batch guard can find the held cluster without tracking a run id. `skip_delete` is a nightly-only debugging escape and is ignored by the daytime lifecycles.
+The nightly per-run name isolates concurrent history (OCI tags, Terraform state) per run. The daytime name is **stable and reservation-tagged** so the evening `daytime-down` teardown and the nightly pre-batch guard can find the held cluster without tracking a run id. The session name is **unique per batch** (`session_id = <batch-run-id>-<reservation>`) — never a stable reused name, because a reused name collides with cloud deletion tombstones and stale terraform-state locks — and is threaded to `session-up` / `session-cell` / `session-down` so every run in one batch addresses the same held cluster. `skip_delete` is a nightly-only debugging escape and is ignored by the daytime and session lifecycles.
+
+## Single-cluster reuse
+
+**Provisioning and tearing down a GPU cluster is ~60 min of infra churn that produces no test signal.** With both intents × the version matrix, a reservation runs several full cluster lifecycles a night, most of that time spent bringing clusters up and down. Single-cluster reuse (the `session-*` lifecycles) provisions **one** cluster per batch leg and runs every cell against it, saving that churn on all but the first cell.
+
+It is a **per-reservation opt-in**: set `nightly-reuse-cluster: true` on a row in `infra/uat/reservations.yaml`. Absent/false keeps the pre-existing per-cell behavior, so a reservation is flipped only after a green manual session run — mirroring how `nightly-intents` / `daytime-intent` onboard. The `uatbroker` committed-registry test pins the launch set (all rows off at launch).
+
+**Batch-wide override (`reuse_mode`).** A manual `UAT Nightly Batch` dispatch takes a `reuse_mode` input to override every reservation at once — for exercising the reuse path across the fleet without editing (and reverting) the registry:
+
+- `auto` (default, and the only value the cron path uses) — honor each reservation's `nightly-reuse-cluster` flag.
+- `force-on` — attempt single-cluster reuse on every **reuse-capable** reservation. A non-capable cloud (e.g. `kind`) is **not** forced on: it falls back to per-cell with a warning, because a `session-*` dispatch there would skip its job and report a green leg that ran nothing. The controller gates `force-on` on the broker's `nightly-reuse-capable` output, which is derived from the same `reuseCapableClouds` allowlist the registry validates against — so the runtime override and the static flag fail closed on the identical set.
+- `force-off` — per-cell everywhere, ignoring the registry flag.
+
+### The batch shape
+
+When a reservation opts in, the nightly controller replaces its per-cell loop with:
+
+```
+session-up  (provision one uniquely-named cluster, hold)
+  → session-cell  main / training     ┐
+  → session-cell  main / inference    │ each: compat → guard-fresh → install →
+  → session-cell  v1.2.3 / training   │       validate → CUJ → uninstall + recycle GPU nodes
+  → session-cell  v1.2.3 / inference  ┘
+session-down  (tear the cluster down — always, even if cells failed)
+```
+
+`session-up`, every `session-cell`, and `session-down` are dispatched **sequentially through the same per-reservation lease**, so the held cluster is only ever consumed by one cell at a time. The cell ordering is unchanged (version outer, intent inner), so a [time-box](#the-version-matrix) drop still sheds the oldest release cells first; whatever cells ran, `session-down` still fires to release the reservation. A `session-up` failure fails the leg (the reuse was requested — fix the provision or unset the flag); a `session-down` failure flags the leg and names the leaked cluster for manual teardown.
+
+### Recycling the GPU nodes between cells
+
+The value of AICR UAT is validating a **from-scratch** GPU-runtime deploy — driver install, skyhook node tuning, and the reboots they trigger. A GPU node the previous cell already tuned would let the readiness gate pass trivially: a **false pass**. So between cells, each `session-cell` (on its own runner, always, even on failure):
+
+1. **Uninstalls** the AICR stack (`tests/uat/<cloud>/run uninstall`) — the gpu-operator `ClusterPolicy` is deleted **first, while the operator that owns its finalizer is still running** (deleting it after `helmfile destroy` would wedge it in `Terminating` and block the next install), then `helmfile destroy`, then a sweep of helm-owned cluster-scoped residue (`ValidatingWebhookConfiguration`s, `MutatingWebhookConfiguration`s, `APIService`s — a leaked webhook whose backing Service is gone rejects cluster-wide creates) and of the release namespaces for their StatefulSet PVCs.
+2. **Recycles the GPU nodes** (`tests/uat/<cloud>/run recycle`, via the per-cloud `cloud_recycle_gpu_nodes` hook) — replaces them so the next cell deploys onto clean-boot hardware, and **fails closed** unless the replacements actually appear.
+
+**Per-cloud recycle mechanics differ, and the proof of freshness differs with them:**
+
+| Cloud | Mechanism | Freshness proof |
+|-------|-----------|-----------------|
+| AWS | terminate instances; the managed node group's ASG launches replacements | new EC2 instance IDs, and the stale `Node` objects are pruned |
+| GCP | delete the instances; the node pool's MIG recreates them | a **changed `bootID`** — a MIG can recreate an out-of-band-deleted VM under the *same name*, so name-disjointness is not a valid proof |
+| Azure | `az vmss reimage` — resets the OS disk, keeps the VM | a **changed `bootID`**, and the `Node` objects are then **deleted so the kubelet re-registers them clean**: reimage preserves the Node object, so prior-cell skyhook/NFD labels and taints would otherwise survive a wiped OS disk and let a tuning operator conclude "already tuned" — a false pass |
+
+**One cell's failure can affect later cells.** The cleanup runs `always()`, but that does not survive a job-level timeout or a hard cancellation — so a cell killed mid-flight can leave the shared cluster dirty. Later cells then fail their freshness guard *as fallout*, not as regressions of the versions they were testing; the controller and the per-cell job summary both say so explicitly when it happens. This is the deliberate trade of reuse: it fails **closed** (a failed cell, never a false pass), but it does couple the cells.
+
+### Correctness guardrails (fail closed)
+
+Before a cell installs, two gates run — a bug in a recycle script therefore costs a *failed cell*, never a false pass:
+
+- **`guard-fresh`** asserts the shared cluster is a valid from-scratch target, and must observe it **stably** (`GUARD_CONSECUTIVE_PASSES`, default 2) so a leftover DaemonSet that has merely not been rescheduled yet cannot read as clean. It checks **AICR-owned** state: the `gpu-worker` nodes are present and Ready, no helm releases survive outside the platform namespaces, no gpu-operator `ClusterPolicy` CR exists, and no AICR GPU-runtime pods are still running. It deliberately does **not** key on `allocatable["nvidia.com/gpu"]` by default — that only proves the AICR stack is down where AICR owns the device plugin, and GKE (`gpuDriverInstallation: DEFAULT`) and AKS (`gpuDriverInstall: true`) have the *platform* install the driver and its own device-plugin DaemonSet, so a freshly recycled node there advertises the resource with zero AICR components installed. The AWS runner, whose EKS config ships no platform plugin, opts the stricter check in via `GUARD_REQUIRE_NO_GPU_ADVERTISED=true`.
+- **`compat`** resolves the cell's recipe and checks its `K8s.server.version` constraint against the live cluster. On a mismatch the cell **fails fast** (a genuine incompatibility regression signal — the same outcome a per-cell run would reach, since a reservation has a single cluster-config, so a dedicated reprovision would be the same shape and equally incompatible). It **fails closed** to incompatible on any parse ambiguity.
+
+### Concurrency posture
+
+The session cluster holds the reservation's GPU capacity for the whole leg, while the GitHub lease is briefly free between the back-to-back cell dispatches. The controller is the sole dispatcher for that reservation during the batch (the `uat-nightly-batch` group serializes batches; the per-reservation lease queues any contender), so the dominant case has no interleave.
+
+Two mechanisms cover the rest:
+
+- **Every provisioning run** (`nightly`, `session-up`, and now `daytime-up` — the scheduled morning handoff is the likeliest non-manual interleaver) runs the [pre-batch guard](#pre-batch-guard), which refuses on a held daytime cluster **and** sweeps the account for leaked `*-sess-*` clusters, failing with the exact `session-down` command to reclaim each one. Because session names are unique per batch, this prefix sweep is the only thing that can ever name a cluster leaked by a crashed or cancelled controller.
+- **A superseded session cell aborts the leg.** In the per-cell model a supersede is benign (the dropped run held nothing); in session mode it means a third contender took the lease while the shared cluster is live, so the controller stops dispatching cells and goes straight to teardown rather than racing.
+
+The controller also emits the `session_id` as a `::notice::` and into the job summary at `session-up` time — *before* any cell runs — so the cluster is reclaimable even if the drive job is later killed. Still, do not manually dispatch onto a reservation mid-batch.
 
 ## Daytime human-access deployment
 
@@ -196,6 +261,7 @@ The nightly batch runs a **cross-version regression** per reservation: `main` (b
 - `previous_n` — stable releases below `main` to run per reservation (default `2`; `0` = `main` only).
 - `deadline_offset_hours` — hours after batch start to stop dispatching new cells (default `5`). This is a **secondary** cap: the controller also enforces a **budget-aware** cutoff derived from the drive job's own `timeout-minutes`, stopping dispatch once fewer than `max_cell_minutes` remain so the last cell always finishes before GitHub kills the job. The effective cutoff is the earlier of the two, so `deadline_offset_hours` no longer needs hand-tuning against the job timeout to keep the graceful drop-oldest reachable.
 - `max_cell_minutes` — wall-clock a single dispatched cell may need to complete (default `150`). Sets the drive job's dispatch reserve: a new cell is dispatched only if at least this many minutes remain before the job's `timeout-minutes` (a small setup slack is also held back), so an overrun sheds the oldest remaining cell gracefully instead of hard-failing the leg mid-cell. Keep it at or above the realistic worst-case cell duration.
+- `reuse_mode` — batch-wide [single-cluster reuse](#single-cluster-reuse) override (default `auto` = per-registry). `force-on` attempts reuse on every reuse-capable reservation (non-capable clouds fall back to per-cell); `force-off` runs per-cell everywhere. The cron path always uses `auto`.
 
 To test a single released version by hand: `gh workflow run uat-run.yaml --repo NVIDIA/aicr --ref main -f reservation=aws-h100 -f aicr_version=v1.2.3`. (`--ref main` dispatches the nightly-path revision of the workflow, not your feature branch's.)
 
@@ -214,6 +280,36 @@ Reservations are data, not code. To onboard a new reserved pool, add a row to `i
 ```
 
 No broker, workflow, or Go change is needed — the nightly batch enumerates rows from the registry, and `uat-run.yaml` resolves them. The unit of sequencing is the *reservation*, so a new GPU type in an existing cloud simply runs in parallel with the others on its own lease. (Provisioning is per *cloud*: the same `uat-aws.yaml` pipeline provisions any AWS accelerator from the row's `cluster-config-path`; you do not add a per-accelerator workflow.)
+
+An optional `nightly-reuse-cluster: true` on the row opts it into [single-cluster reuse](#single-cluster-reuse) (absent/false = per-cell provisioning, the default). Reuse is only accepted on clouds that implement the session lifecycles — `aws`, `gcp`, `azure`; the registry rejects it on `kind` at parse time, because a pipeline that cannot handle a `session-*` lifecycle would skip its job and report a **green leg that ran nothing**.
+
+Verify it by hand before flipping the flag. Two rules make the manual run work:
+
+- **Dispatch them one at a time, waiting for each.** All four share the `uat-<reservation>` lease, which holds only one in-progress plus one *pending* run — fire them together and the middle dispatches are [superseded](#how-queuing-works-the-reservation-lease), so you would silently verify nothing (and possibly drop the teardown).
+- **`session_id` must end with the reservation name** and be lowercase alnum+hyphen. The suffix is asserted by every pipeline so a mistyped id can never point at another reservation's cluster; lowercase keeps one id portable across clouds (GKE cluster names forbid uppercase, and cap the id at 30 characters).
+
+```bash
+res=aws-h100
+sid="test-$(date +%s)-${res}"     # lowercase, reservation-suffixed
+
+for step in "session-up:training" "session-cell:training" "session-cell:inference" "session-down:training"; do
+  gh workflow run uat-run.yaml --repo NVIDIA/aicr --ref main \
+    -f reservation="${res}" -f lifecycle="${step%%:*}" \
+    -f intent="${step##*:}" -f session_id="${sid}"
+  # Wait for it to finish before dispatching the next — the lease keeps only one
+  # pending run and cancels the older one.
+  sleep 10
+  gh run watch "$(gh run list --workflow uat-run.yaml --limit 1 \
+    --json databaseId --jq '.[0].databaseId')" --exit-status || break
+done
+```
+
+If anything goes wrong mid-sequence, reclaim the cluster with the teardown alone — it is idempotent, so it is also safe to run against a cluster that was never provisioned:
+
+```bash
+gh workflow run uat-run.yaml --repo NVIDIA/aicr --ref main \
+  -f reservation="${res}" -f lifecycle=session-down -f session_id="${sid}"
+```
 
 Onboarding a new *cloud* (rather than a new pool in an existing cloud) is a code change on top of the row: a `run-<cloud>` job in `uat-run.yaml`, a `uat-<cloud>.yaml` pipeline, and account federation under `infra/uat-<cloud>-account/`. During bring-up, set `nightly-intents: []` (explicit empty list — absent defaults to `[training]`) so the reservation is manually dispatchable via `uat-run.yaml` but skipped by the nightly batch; flip it once the pipeline has green runs.
 

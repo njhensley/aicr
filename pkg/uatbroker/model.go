@@ -30,6 +30,34 @@ const (
 // validClouds is the set of accepted Reservation.Cloud values.
 var validClouds = map[string]bool{CloudAWS: true, CloudGCP: true, CloudAzure: true, CloudKind: true}
 
+// reuseCapableClouds is the ALLOWLIST of clouds whose pipeline implements the
+// session-* lifecycles that single-cluster reuse requires: a session_id
+// pass-through in uat-run.yaml, session-up/session-cell/session-down handling in
+// the per-cloud workflow, and a .github/scripts/uat-<cloud>-recycle-gpu.sh to
+// recycle the GPU nodes between cells.
+//
+// This is deliberately an allowlist, not a denylist of known-bad clouds: a cloud
+// added later without session support must fail closed. The failure it prevents
+// is the worst kind for a validation system — uat-kind.yaml gates its only job on
+// `lifecycle == 'nightly'`, so a session-* dispatch there SKIPS the job, and a run
+// whose only job is skipped concludes `success`. The nightly controller reads that
+// as a passing cell, so an unsupported cloud would report a fully GREEN batch leg
+// in which nothing was ever provisioned, installed, or validated.
+var reuseCapableClouds = map[string]bool{CloudAWS: true, CloudGCP: true, CloudAzure: true}
+
+// ReuseCapableCloud reports whether cloud implements the session-* lifecycles
+// single-cluster reuse requires (session_id pass-through, session-up/cell/down
+// handling, and a GPU recycle script). It is the single source of truth for the
+// reuseCapableClouds allowlist: Validate uses it to reject a static
+// nightly-reuse-cluster on an unsupported cloud, and the broker emits it per row
+// (nightly-reuse-capable) so the nightly controller's RUNTIME reuse override
+// (reuse_mode=force-on) can fail closed on exactly the same set without
+// re-encoding the allowlist in bash — where a drift would reintroduce the very
+// fail-open the allowlist exists to prevent.
+func ReuseCapableCloud(cloud string) bool {
+	return reuseCapableClouds[cloud]
+}
+
 // Recognized recipe-intent values. The daytime human-access rotation (#1281,
 // DC8) picks one flavor per reservation via Reservation.DaytimeIntent; these
 // mirror the intents the per-cloud UAT pipelines accept.
@@ -104,6 +132,28 @@ type Reservation struct {
 	// configurable cloud→flavor default — data, not code — so the split
 	// (AWS=training, GCP=inference at launch) can change without a workflow edit.
 	DaytimeIntent string `yaml:"daytime-intent"`
+	// NightlyReuseCluster opts this reservation into single-cluster reuse mode
+	// for the nightly version matrix (#1274 follow-on). When true, the nightly
+	// controller provisions ONE uniquely-named session cluster per batch leg,
+	// runs every (version × intent) cell against it — recycling the GPU nodes
+	// and uninstalling the AICR stack between cells so each cell still tests a
+	// from-scratch GPU-runtime deploy — and tears the session cluster down once
+	// at the end, instead of a full provision→CUJ→teardown per cell. Absent /
+	// false keeps the pre-existing per-cell provision behavior, so this is a
+	// safe, per-reservation opt-in flipped only after a green manual session
+	// run (mirroring how nightly-intents / daytime-intent onboard). A cell whose
+	// recipe k8s constraints the session cluster cannot satisfy FAILS FAST (the
+	// compat gate) rather than validating against a mismatched cluster — the same
+	// outcome a per-cell run would reach, because a reservation has a single
+	// cluster-config, so a dedicated reprovision would be the same shape and
+	// equally incompatible. Enabling reuse therefore never trades correctness for
+	// the saved provisioning time.
+	//
+	// Only clouds in reuseCapableClouds may set this; Validate rejects it
+	// elsewhere (fail closed), because a pipeline that does not handle a
+	// session-* lifecycle skips its job and the run still concludes success —
+	// which the nightly controller would record as a passing cell.
+	NightlyReuseCluster bool `yaml:"nightly-reuse-cluster"`
 }
 
 // NightlyIntentsOrDefault returns the reservation's nightly-batch intents.

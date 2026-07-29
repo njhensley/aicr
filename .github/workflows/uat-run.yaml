@@ -67,10 +67,22 @@ on:
         options: [training, inference]
         default: training
       lifecycle:
-        description: 'Cluster lifecycle. nightly: provision→CUJ→teardown. daytime-up: provision+deploy+HOLD (stable name, no teardown). daytime-down: tear down the held daytime cluster.'
+        description: >-
+          Cluster lifecycle. nightly: provision→CUJ→teardown. daytime-up/down:
+          provision+hold / teardown the held daytime cluster. session-up/cell/down:
+          single-cluster reuse — provision one shared cluster / run a cell against it
+          (uninstall + recycle GPU nodes after) / tear it down. session-* require session_id.
         type: choice
-        options: [nightly, daytime-up, daytime-down]
+        options: [nightly, daytime-up, daytime-down, session-up, session-cell, session-down]
         default: nightly
+      session_id:
+        description: >-
+          Unique token identifying the shared session cluster for the session-*
+          lifecycles (the nightly controller sets it per batch leg; must be the SAME
+          across a batch's session-up / session-cell / session-down). Empty for
+          non-session lifecycles.
+        type: string
+        default: ''
       skip_delete:
         description: 'Skip cluster teardown (manual debugging only; ignored for daytime lifecycles).'
         type: boolean
@@ -96,6 +108,9 @@ on:
       lifecycle:
         type: string
         default: nightly
+      session_id:
+        type: string
+        default: ''
       skip_delete:
         type: boolean
         default: false
@@ -193,6 +208,7 @@ jobs:
       aicr_version: ${{ inputs.aicr_version }}
       intent: ${{ inputs.intent }}
       lifecycle: ${{ inputs.lifecycle }}
+      session_id: ${{ inputs.session_id }}
       cluster_config_path: ${{ needs.resolve.outputs.cluster_config_path }}
       test_config_dir: ${{ needs.resolve.outputs.test_config_dir }}
       accelerator: ${{ needs.resolve.outputs.accelerator }}
@@ -215,6 +231,7 @@ jobs:
       aicr_version: ${{ inputs.aicr_version }}
       intent: ${{ inputs.intent }}
       lifecycle: ${{ inputs.lifecycle }}
+      session_id: ${{ inputs.session_id }}
       cluster_config_path: ${{ needs.resolve.outputs.cluster_config_path }}
       test_config_dir: ${{ needs.resolve.outputs.test_config_dir }}
       skip_delete: ${{ inputs.skip_delete }}
@@ -236,6 +253,7 @@ jobs:
       aicr_version: ${{ inputs.aicr_version }}
       intent: ${{ inputs.intent }}
       lifecycle: ${{ inputs.lifecycle }}
+      session_id: ${{ inputs.session_id }}
       cluster_config_path: ${{ needs.resolve.outputs.cluster_config_path }}
       test_config_dir: ${{ needs.resolve.outputs.test_config_dir }}
       skip_delete: ${{ inputs.skip_delete }}

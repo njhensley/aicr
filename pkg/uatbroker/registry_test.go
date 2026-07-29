@@ -684,6 +684,31 @@ func TestCommittedRegistryValid(t *testing.T) {
 				name, res.NightlyIntentMinVersions, want)
 		}
 	}
+
+	// The single-cluster-reuse enrollment set. Every row ships OFF: reuse is
+	// flipped per reservation only after a green manual session run (see
+	// docs/contributor/uat.md → Single-cluster reuse), so a future enrollment
+	// changes the value here DELIBERATELY. Locked because this is the one
+	// per-reservation knob whose mis-set value has correctness consequences and
+	// not merely cost: it rewires the reservation's whole nightly leg onto a
+	// shared session cluster with GPU recycling between cells.
+	wantReuse := map[string]bool{
+		"aws-h100":   false,
+		"gcp-h100":   false,
+		"azure-h100": false,
+		"aws-gb200":  false,
+		"kind-h100":  false,
+	}
+	for name, want := range wantReuse {
+		res, lookupErr := reg.Lookup(name)
+		if lookupErr != nil {
+			t.Errorf("committed registry missing %q: %v", name, lookupErr)
+			continue
+		}
+		if res.NightlyReuseCluster != want {
+			t.Errorf("committed registry nightly-reuse-cluster[%q] = %v, want %v", name, res.NightlyReuseCluster, want)
+		}
+	}
 }
 
 // TestParseRegistryBareNullNightlyIntents locks the authoring edge documented
@@ -756,5 +781,211 @@ func TestNightlyIntentsOrDefaultCopies(t *testing.T) {
 	got[0] = "mutated"
 	if r.NightlyIntents[0] != IntentTraining {
 		t.Errorf("mutating the returned slice corrupted the reservation: %v", r.NightlyIntents)
+	}
+}
+
+// TestParseRegistryNightlyReuseCluster verifies the single-cluster reuse opt-in
+// decodes as a bool: absent is false (per-cell provision, the default), and an
+// explicit true enrolls the reservation in session mode. KnownFields still
+// governs the field name (a typo fails the parse), so only the value semantics
+// need locking here.
+func TestParseRegistryNightlyReuseCluster(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+		want bool
+	}{
+		{
+			name: "absent defaults to false",
+			yaml: `
+reservations:
+  - name: aws-h100
+    cloud: aws
+    reservation-id: cr-x
+    accelerator: h100
+    gpu-count: 8
+    cluster-config-path: c.yaml
+    test-config-dir: t
+`,
+			want: false,
+		},
+		{
+			name: "explicit true opts in",
+			yaml: `
+reservations:
+  - name: aws-h100
+    cloud: aws
+    reservation-id: cr-x
+    accelerator: h100
+    gpu-count: 8
+    cluster-config-path: c.yaml
+    test-config-dir: t
+    nightly-reuse-cluster: true
+`,
+			want: true,
+		},
+		{
+			name: "explicit false stays opted out",
+			yaml: `
+reservations:
+  - name: aws-h100
+    cloud: aws
+    reservation-id: cr-x
+    accelerator: h100
+    gpu-count: 8
+    cluster-config-path: c.yaml
+    test-config-dir: t
+    nightly-reuse-cluster: false
+`,
+			want: false,
+		},
+		{
+			// The edge KnownFields cannot catch (the key IS valid): a bare
+			// `nightly-reuse-cluster:` decodes as the zero value. It must land on
+			// the SAFE side — opted out — so a half-written opt-in never enrolls a
+			// reservation in session mode. Mirrors
+			// TestParseRegistryBareNullNightlyIntents; if this ever fails because
+			// the decode semantics changed, update the field's doc comment too.
+			name: "bare null decodes as absent (false)",
+			yaml: `
+reservations:
+  - name: aws-h100
+    cloud: aws
+    reservation-id: cr-x
+    accelerator: h100
+    gpu-count: 8
+    cluster-config-path: c.yaml
+    test-config-dir: t
+    nightly-reuse-cluster:
+`,
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reg, err := ParseRegistry([]byte(tt.yaml))
+			if err != nil {
+				t.Fatalf("ParseRegistry() = %v, want nil error", err)
+			}
+			if got := reg.Reservations[0].NightlyReuseCluster; got != tt.want {
+				t.Errorf("NightlyReuseCluster = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestParseRegistryNightlyReuseClusterTypoFailsClosed pins the KnownFields claim
+// the table above relies on: a mistyped key must fail the PARSE rather than
+// silently leaving the real field on its default, which would read as "opted
+// out" and mask an intended enrollment.
+func TestParseRegistryNightlyReuseClusterTypoFailsClosed(t *testing.T) {
+	const doc = `
+reservations:
+  - name: aws-h100
+    cloud: aws
+    reservation-id: cr-x
+    accelerator: h100
+    gpu-count: 8
+    cluster-config-path: c.yaml
+    test-config-dir: t
+    nightly-reuse-clustr: true
+`
+	if _, err := ParseRegistry([]byte(doc)); err == nil {
+		t.Fatal("ParseRegistry(mistyped nightly-reuse-clustr) = nil error, want a KnownFields parse failure")
+	}
+}
+
+// TestValidateNightlyReuseClusterCloudSupport locks the fail-closed allowlist:
+// reuse is only legal on clouds whose pipeline implements the session-*
+// lifecycles. Without this, `nightly-reuse-cluster: true` on cloud=kind parses
+// clean and the nightly leg reports GREEN having run nothing — uat-kind.yaml
+// gates its only job on `lifecycle == 'nightly'`, so every session-* dispatch
+// skips the job and the run still concludes `success`.
+func TestValidateNightlyReuseClusterCloudSupport(t *testing.T) {
+	row := func(name, cloud string) string {
+		return `
+reservations:
+  - name: ` + name + `
+    cloud: ` + cloud + `
+    accelerator: h100
+    gpu-count: 8
+    cluster-config-path: c.yaml
+    test-config-dir: t
+    nightly-reuse-cluster: true
+`
+	}
+	tests := []struct {
+		name    string
+		cloud   string
+		resName string
+		wantErr bool
+	}{
+		{"aws supports reuse", CloudAWS, "aws-h100", false},
+		{"gcp supports reuse", CloudGCP, "gcp-h100", false},
+		{"azure supports reuse", CloudAzure, "azure-h100", false},
+		// kind has no session_id pass-through, no session-* handling, and no
+		// recycle script — reuse there is a green no-op, so reject it.
+		{"kind rejects reuse", CloudKind, "kind-h100", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParseRegistry([]byte(row(tt.resName, tt.cloud)))
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("ParseRegistry(reuse on %s) = nil error, want a validation failure", tt.cloud)
+				}
+				if !stderrors.Is(err, errors.New(errors.ErrCodeInvalidRequest, "")) {
+					t.Errorf("error code = %v, want ErrCodeInvalidRequest", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ParseRegistry(reuse on %s) = %v, want nil error", tt.cloud, err)
+			}
+		})
+	}
+}
+
+// TestValidateNightlyReuseClusterOffIsAlwaysValid guards the inverse: the
+// allowlist must only constrain rows that actually opt IN, so an unsupported
+// cloud remains perfectly valid while reuse is off (the committed state).
+func TestValidateNightlyReuseClusterOffIsAlwaysValid(t *testing.T) {
+	const doc = `
+reservations:
+  - name: kind-h100
+    cloud: kind
+    accelerator: h100
+    gpu-count: 1
+    cluster-config-path: c.yaml
+    test-config-dir: t
+`
+	if _, err := ParseRegistry([]byte(doc)); err != nil {
+		t.Fatalf("ParseRegistry(kind without reuse) = %v, want nil error", err)
+	}
+}
+
+// TestReuseCapableCloud pins the exported allowlist predicate that both
+// Validate() and the broker's emitted nightly-reuse-capable key depend on, so
+// the static registry check and the controller's runtime force-on override
+// gate on the identical set. A cloud added to validClouds but not wired for the
+// session-* lifecycles must report false (fail closed).
+func TestReuseCapableCloud(t *testing.T) {
+	tests := []struct {
+		cloud string
+		want  bool
+	}{
+		{CloudAWS, true},
+		{CloudGCP, true},
+		{CloudAzure, true},
+		{CloudKind, false},
+		{"", false},
+		{"gce", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.cloud, func(t *testing.T) {
+			if got := ReuseCapableCloud(tt.cloud); got != tt.want {
+				t.Errorf("ReuseCapableCloud(%q) = %v, want %v", tt.cloud, got, tt.want)
+			}
+		})
 	}
 }

@@ -51,6 +51,7 @@ jobs:
     outputs:
       code: ${{ steps.code.outputs.code }}
       actions: ${{ steps.changes.outputs.actions }}
+      shell: ${{ steps.changes.outputs.shell }}
       deps: ${{ steps.changes.outputs.deps }}
       renovate: ${{ steps.changes.outputs.renovate }}
       bom: ${{ steps.changes.outputs.bom }}
@@ -69,6 +70,11 @@ jobs:
             actions:
               - '.github/workflows/**'
               - '.github/actions/**'
+            shell:
+              - '.github/scripts/**'
+              - 'tests/uat/lib/**'
+              - 'tests/uat/*/run'
+              - '.github/workflows/merge-gate.yaml'
             deps:
               - 'go.mod'
               - 'go.sum'
@@ -305,6 +311,49 @@ jobs:
       - run: echo "No workflow/action changes — actionlint not required"
 
   # ---------------------------------------------------------------------------
+  # Shell: static analysis + unit tests for the standalone scripts.
+  #
+  # actionlint only inspects `run:` blocks inside workflow YAML (and is invoked
+  # with -shellcheck= , i.e. its shellcheck integration disabled), so the
+  # standalone scripts under .github/scripts/ and the UAT phase library got no
+  # checking at all. They carry real correctness logic — destructive cloud calls
+  # and the fail-closed reuse gates — so lint them directly and run their unit
+  # tests here.
+  # ---------------------------------------------------------------------------
+  shell-checks:
+    needs: [check-paths]
+    if: needs.check-paths.outputs.shell == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: shellcheck (UAT scripts + phase library)
+        # -x follows `source` so the runners' sourcing of phases.sh is analysed.
+        # Scoped to the UAT shell surface (not the whole repo) so this gate stays
+        # green on unrelated pre-existing scripts; widen it as they are cleaned.
+        run: |
+          shellcheck --version
+          shellcheck -x -S warning \
+            .github/scripts/uat-aws-recycle-gpu.sh \
+            .github/scripts/uat-gcp-recycle-gpu.sh \
+            .github/scripts/uat-azure-recycle-gpu.sh \
+            tests/uat/lib/phases.sh \
+            tests/uat/lib/phases_test.sh \
+            tests/uat/aws/run tests/uat/gcp/run tests/uat/azure/run
+      - name: Script unit tests (tests/uat/lib)
+        run: bash tests/uat/lib/phases_test.sh
+
+  shell-checks-skip:
+    needs: [check-paths]
+    if: needs.check-paths.outputs.shell != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - run: echo "No shell-script changes — shell checks not required"
+
+  # ---------------------------------------------------------------------------
   # License verification
   # ---------------------------------------------------------------------------
 
@@ -519,6 +568,8 @@ jobs:
       - malware-scan-skip
       - actionlint
       - actionlint-skip
+      - shell-checks
+      - shell-checks-skip
       - verify-licenses
       - verify-licenses-skip
       - verify-renovate

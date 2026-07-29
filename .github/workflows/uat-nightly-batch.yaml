@@ -46,6 +46,14 @@ on:
         description: 'Wall-clock a dispatched cell may need. The drive stops dispatching once fewer minutes than this remain before its timeout, so the last cell finishes cleanly.'
         type: string
         default: '150'
+      reuse_mode:
+        description: 'Reuse override. auto = honor the nightly-reuse-cluster flag (default). force-on = reuse on every reuse-capable reservation (others per-cell). force-off = per-cell everywhere.'
+        type: choice
+        default: 'auto'
+        options:
+          - auto
+          - force-on
+          - force-off
 
 permissions:
   contents: read
@@ -152,6 +160,9 @@ jobs:
           PREVIOUS_N: ${{ inputs.previous_n || '1' }}
           DEADLINE_OFFSET_HOURS: ${{ inputs.deadline_offset_hours || '5' }}
           MAX_CELL_MINUTES: ${{ inputs.max_cell_minutes || '150' }}
+          # Single-cluster reuse override for the whole batch. Empty on the cron
+          # schedule trigger (no inputs) -> resolves to 'auto' = per-registry.
+          REUSE_MODE: ${{ inputs.reuse_mode || 'auto' }}
           # MUST equal the drive job's timeout-minutes literal above. Used to
           # derive the budget-aware dispatch cutoff so the last cell finishes
           # before GitHub kills this job (issue #1778).
@@ -174,6 +185,12 @@ jobs:
           # (leaving the slack to cover only dispatch/watch latency).
           DRIVE_START=$(date +%s)
           SETUP_SLACK_MINUTES=10
+          # Wall-clock reserved for the reuse path's trailing session-down
+          # (dispatch + run-id resolve + `gh run watch` through a full actuator
+          # destroy, which runs tens of minutes on EKS/GKE/AKS and retries 3x).
+          # Only applied when REUSE is on; the per-cell path needs no reserve
+          # because each cell tears down its own cluster.
+          SESSION_DOWN_RESERVE_MINUTES=45
           # Poll budget for finding a dispatched run (gh workflow run returns no
           # run id): POLL_MAX_ATTEMPTS x POLL_INTERVAL_SECONDS seconds.
           POLL_MAX_ATTEMPTS=24
@@ -204,6 +221,65 @@ jobs:
           # applies the reservation's nightly-intent-min-versions gate per
           # version; this line is just the leg-level summary of what's enrolled.
           echo "Nightly intents for ${RESERVATION}: ${NIGHTLY_INTENTS_CSV} (release cells further gated by nightly-intent-min-versions)"
+
+          # Single-cluster reuse opt-in (#1274 follow-on). When effective, this
+          # leg provisions ONE uniquely-named session cluster, runs every cell
+          # against it (recycling GPU nodes + uninstalling between cells), and
+          # tears it down once — instead of a provision→CUJ→teardown per cell.
+          #
+          # The effective mode is the per-reservation registry flag
+          # (nightly-reuse-cluster), optionally overridden batch-wide by the
+          # reuse_mode dispatch input:
+          #   auto (default / cron): honor the registry flag.
+          #   force-on:  attempt reuse on every REUSE-CAPABLE reservation — a
+          #              one-shot way to exercise the reuse path across the fleet
+          #              without editing the registry — but NON-capable clouds
+          #              fall back to per-cell (see below).
+          #   force-off: per-cell everywhere, ignoring the registry flag.
+          # Both values are emitted by the broker (absent decodes to false), so a
+          # missing key is the safe per-cell default.
+          REGISTRY_REUSE=$(sed -n 's/^nightly-reuse-cluster=//p' <<<"$ROW")
+          REGISTRY_REUSE="${REGISTRY_REUSE:-false}"
+          # Whether this reservation's CLOUD implements the session-* lifecycles.
+          # The broker derives this from the SAME reuseCapableClouds allowlist
+          # that Validate() enforces for the static flag, so force-on fails closed
+          # on exactly that set without re-encoding the allowlist here. Absent (an
+          # older broker binary) decodes to false, so force-on can never push
+          # reuse onto a cloud whose capability the broker did not vouch for.
+          REUSE_CAPABLE=$(sed -n 's/^nightly-reuse-capable=//p' <<<"$ROW")
+          REUSE_CAPABLE="${REUSE_CAPABLE:-false}"
+          case "${REUSE_MODE:-auto}" in
+            auto)
+              REUSE="$REGISTRY_REUSE"
+              ;;
+            force-off)
+              REUSE=false
+              ;;
+            force-on)
+              # Gate force-on by capability: forcing a session-* dispatch onto a
+              # cloud that skips it (e.g. kind, whose only job gates on
+              # lifecycle=='nightly') would conclude success having provisioned,
+              # installed, and validated NOTHING — the fail-open the allowlist
+              # exists to prevent. On a non-capable cloud, degrade to per-cell
+              # with a loud warning rather than silently green.
+              if [[ "$REUSE_CAPABLE" == "true" ]]; then
+                REUSE=true
+              else
+                REUSE=false
+                echo "::warning::reuse_mode=force-on but ${RESERVATION}'s cloud is not reuse-capable" \
+                  "(no session-* lifecycle support); running this leg per-cell."
+              fi
+              ;;
+            *)
+              # workflow_dispatch's choice type constrains this, but a raw API
+              # dispatch could pass anything — fail closed rather than silently
+              # treat an unknown mode as one of the valid ones.
+              echo "::error::invalid reuse_mode '${REUSE_MODE}'; want auto, force-on, or force-off." >&2
+              exit 1
+              ;;
+          esac
+          echo "Single-cluster reuse for ${RESERVATION}: ${REUSE}" \
+            "(registry=${REGISTRY_REUSE}, capable=${REUSE_CAPABLE}, mode=${REUSE_MODE:-auto})"
 
           # Validate previous_n before the broker consumes it. `--previous-n` is
           # an int flag so it rejects non-integers, but it would accept a
@@ -243,6 +319,15 @@ jobs:
             echo "::error::max_cell_minutes+slack (${MAX_CELL_MINUTES}+${SETUP_SLACK_MINUTES}) must be < drive-job timeout (${DRIVE_JOB_TIMEOUT_MINUTES}m); no cell could dispatch." >&2
             exit 1
           fi
+          # Same guard for the reuse path, which additionally reserves the
+          # session-down window: if the three together leave no room, every cell
+          # would drop immediately and the leg would report a silent empty pass.
+          if [[ "$REUSE" == "true" ]] && \
+             (( MAX_CELL_MINUTES + SESSION_DOWN_RESERVE_MINUTES + SETUP_SLACK_MINUTES >= DRIVE_JOB_TIMEOUT_MINUTES )); then
+            echo "::error::reuse mode: max_cell_minutes+teardown-reserve+slack (${MAX_CELL_MINUTES}+${SESSION_DOWN_RESERVE_MINUTES}+${SETUP_SLACK_MINUTES})" >&2
+            echo "::error::must be < the drive-job timeout (${DRIVE_JOB_TIMEOUT_MINUTES}m); no cell could dispatch." >&2
+            exit 1
+          fi
 
           # Effective dispatch cutoff = the EARLIER of two deadlines:
           #   (1) the user time-box, anchored to the single batch-start timestamp
@@ -256,109 +341,287 @@ jobs:
           #       cell gracefully instead of hard-failing the leg mid-cell (#1778).
           # (2) is per-leg (DRIVE_START differs across matrix legs); (1) is shared.
           offset_deadline=$(( BATCH_START + DEADLINE_OFFSET_HOURS * 3600 ))
-          budget_deadline=$(( DRIVE_START + (DRIVE_JOB_TIMEOUT_MINUTES - MAX_CELL_MINUTES - SETUP_SLACK_MINUTES) * 60 ))
+          # In reuse mode the last dispatched cell is NOT the last unit of work:
+          # an unconditional session-down must still dispatch, be resolved, and be
+          # watched through a full actuator destroy. Reserving only one cell (the
+          # per-cell model's assumption, where each cell tears down its own
+          # cluster) leaves zero budget for that teardown, so a full-length final
+          # cell runs the drive job into its timeout-minutes kill and the held
+          # session cluster leaks. Reserve the teardown window on top of the cell.
+          teardown_reserve=0
+          if [[ "$REUSE" == "true" ]]; then
+            teardown_reserve="${SESSION_DOWN_RESERVE_MINUTES}"
+          fi
+          budget_deadline=$(( DRIVE_START + (DRIVE_JOB_TIMEOUT_MINUTES - MAX_CELL_MINUTES - teardown_reserve - SETUP_SLACK_MINUTES) * 60 ))
           deadline=$(( offset_deadline < budget_deadline ? offset_deadline : budget_deadline ))
           if (( budget_deadline < offset_deadline )); then
             echo "Dispatch cutoff: budget-aware (${MAX_CELL_MINUTES}m cell reserve before the ${DRIVE_JOB_TIMEOUT_MINUTES}m drive-job timeout), $(( (deadline - DRIVE_START) / 60 ))m into this leg."
           else
             echo "Dispatch cutoff: user time-box (deadline_offset_hours=${DEADLINE_OFFSET_HOURS}), $(( (deadline - BATCH_START) / 60 ))m after batch start."
           fi
-          cell=0
           leg_failed=""
-          # Version outer-loop, intent inner-loop: `main` runs every intent
-          # before any release cell, so a time-box drop always sheds the OLDEST
-          # release cells first — never main's inference. Each (version × intent)
-          # is a full provision→CUJ→teardown dispatched through the shared lease,
-          # so the intents serialize automatically (no contention).
-          #
-          # Intents are per-CELL: the schedule already applied each
-          # reservation's nightly-intent-min-versions gate, so a release that
-          # predates an intent's minimum version carries a shorter (or empty)
-          # .intents list and that (version × intent) never dispatches; `main`
-          # always carries every listed intent.
-          for ver in "${versions[@]}"; do
-            mapfile -t cell_intents < <(jq -r --arg r "$RESERVATION" --arg v "$ver" \
-              '.[$r][] | select(.aicr_version == $v) | .intents[]' <<<"$schedule")
-            # A fully-gated release cell (no eligible intents) contributes
-            # nothing — skip it without consuming the time-box or cell counter.
-            (( ${#cell_intents[@]} == 0 )) && continue
-            for intent in "${cell_intents[@]}"; do
-              if (( $(date +%s) >= deadline )); then
-                echo "::notice::Dispatch cutoff reached (time-box or drive-job budget) — dropping remaining cells for ${RESERVATION} (oldest release first)."
-                break 2
-              fi
-              cell=$((cell + 1))
-              label="${ver:-main}"
-              # Unique per-dispatch key (controller run id + attempt + reservation
-              # + cell index) so the resolver below watches THIS run and never a
-              # concurrent manual dispatch of the same reservation/version. The
-              # cell index increments per (version × intent), so the two intents
-              # of one version get distinct keys and distinct run titles.
-              dispatch_key="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${RESERVATION}-${cell}"
-              # MUST match uat-run.yaml's run-name exactly (now includes intent).
-              title="UAT ${RESERVATION} ${intent} @ ${label} #${dispatch_key}"
-              echo "::group::${title} [intent=${intent}]"
+          # SESSION_ID is threaded to session-* dispatches only; empty for the
+          # per-cell (nightly) path, where uat-run.yaml defaults it away.
+          SESSION_ID=""
+          # A representative intent for session-up / session-down, which provision
+          # / tear down only and ignore intent. NIGHTLY_INTENTS_CSV is non-empty
+          # here (the opt-out exited above), so FIRST_INTENT is always valid.
+          IFS=',' read -r FIRST_INTENT _ <<<"$NIGHTLY_INTENTS_CSV"
 
-              gh workflow run uat-run.yaml --repo "$REPO" --ref "$REF" \
-                -f reservation="$RESERVATION" -f aicr_version="$ver" \
-                -f intent="$intent" \
-                -f dispatch_key="$dispatch_key"
+          # dispatch_and_watch <lifecycle> <aicr_version> <intent> <tag>
+          # Dispatch one uat-run.yaml unit of work, resolve its run by the
+          # globally-unique title, block until it finishes, and set RESULT to
+          # success | superseded | failed | unresolved. Shared by the per-cell
+          # (nightly) and the single-cluster (session-*) paths so both use the
+          # identical resolve/watch/classify logic.
+          dispatch_and_watch() {
+            local lifecycle="$1" ver="$2" intent="$3" tag="$4"
+            RESULT=""
+            local label="${ver:-main}"
+            # Unique per-dispatch key (controller run id + attempt + reservation
+            # + tag) so the resolver watches THIS run and never a concurrent
+            # manual dispatch of the same reservation/version.
+            local dispatch_key="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${RESERVATION}-${tag}"
+            # MUST byte-match uat-run.yaml's run-name exactly (it now includes
+            # the intent, per #1807) so the resolver below finds THIS dispatch.
+            local title="UAT ${RESERVATION} ${intent} @ ${label} #${dispatch_key}"
+            echo "::group::${title} [lifecycle=${lifecycle} intent=${intent}]"
 
-              # Resolve the dispatched run by its run-name — this title MUST match
-              # uat-run.yaml's `run-name:` (which appends the same dispatch_key).
-              # dispatch_key makes the title globally unique, so an exact title
-              # match is unambiguous; no createdAt filter (a runner clock running
-              # ahead of GitHub's API clock would falsely reject this dispatch).
-              run_id=""
-              for _ in $(seq 1 "$POLL_MAX_ATTEMPTS"); do
-                sleep "$POLL_INTERVAL_SECONDS"
-                run_id=$(gh run list --repo "$REPO" --workflow uat-run.yaml \
-                  --event workflow_dispatch --limit 50 \
-                  --json databaseId,displayTitle,createdAt 2>/dev/null \
-                  | jq -r --arg t "$title" \
-                      'map(select(.displayTitle == $t))
-                       | sort_by(.createdAt) | .[-1].databaseId // empty' || true)
-                [[ -n "$run_id" ]] && break
-              done
-              if [[ -z "$run_id" ]]; then
-                # Fail the leg rather than continue: an unwatched run can still
-                # hold the reservation's pending slot and let a later (lower-
-                # priority) cell supersede it, breaking version ordering.
-                echo "::error::Dispatched ${title} but could not resolve its run id; stopping this reservation leg to preserve version ordering."
-                echo "::endgroup::"
-                exit 1
-              fi
-
-              echo "Waiting on run ${run_id} ..."
-              # --exit-status is intentionally not fatal here; classify the run's
-              # conclusion below so we can distinguish a benign superseded run from
-              # a real failure without aborting mid-loop.
-              # Output is discarded: in a non-TTY log `gh run watch` APPENDS a full
-              # status render every refresh (no in-place redraw), which flooded the
-              # drive log with tens of thousands of duplicate lines per multi-hour
-              # cell. We only need it to BLOCK until the run finishes; the
-              # conclusion is read from `gh run view` below, so the live render is
-              # redundant. --interval 60 keeps the polling gentle on the API.
-              gh run watch "$run_id" --repo "$REPO" --interval 60 --exit-status >/dev/null 2>&1 || true
-
-              conclusion=$(gh run view "$run_id" --repo "$REPO" --json conclusion --jq '.conclusion' 2>/dev/null || echo "")
-              njobs=$(gh api "repos/${REPO}/actions/runs/${run_id}/jobs" --jq '.total_count' 2>/dev/null || echo "")
-              if [[ "$conclusion" == "cancelled" && "$njobs" == "0" ]]; then
-                # Benign: the single-slot reservation lease dropped a pending run.
-                # Surface it (must not be silent) but do not fail the leg — the
-                # superseded-run observer complements this (DC1 superseded surfacing).
-                echo "::warning::${title} [intent=${intent}] was superseded while pending (dropped by the reservation lease); re-dispatch when the reservation frees."
-              elif [[ "$conclusion" != "success" ]]; then
-                # Real cell failure/timeout — record it so the leg (and thus the
-                # nightly batch) fails, but keep testing the remaining cells.
-                echo "::error::${title} [intent=${intent}] finished with conclusion '${conclusion:-unknown}'."
-                leg_failed=1
-              fi
+            # Guard the dispatch so a transient failure (GitHub API 5xx,
+            # secondary rate-limit over a multi-hour batch, a runner network
+            # blip) does NOT abort the whole run step under `set -e` — that would
+            # skip the always-run session-down below and leak the held cluster.
+            # A dispatch failure is classified as unresolved, matching the
+            # unresolved run-id path; every other gh call here is already
+            # fail-soft, so the function never aborts its caller.
+            if ! gh workflow run uat-run.yaml --repo "$REPO" --ref "$REF" \
+              -f reservation="$RESERVATION" -f aicr_version="$ver" \
+              -f intent="$intent" -f lifecycle="$lifecycle" \
+              -f session_id="$SESSION_ID" \
+              -f dispatch_key="$dispatch_key"; then
+              echo "::error::failed to dispatch ${title} (gh workflow run returned non-zero)."
               echo "::endgroup::"
+              RESULT="unresolved"
+              return 0
+            fi
+
+            # Resolve by run-name — this title MUST match uat-run.yaml's
+            # `run-name:` (which appends the same dispatch_key). dispatch_key
+            # makes the title globally unique, so an exact match is unambiguous;
+            # no createdAt filter (a runner clock ahead of GitHub's API clock
+            # would falsely reject this dispatch).
+            local run_id=""
+            local _
+            for _ in $(seq 1 "$POLL_MAX_ATTEMPTS"); do
+              sleep "$POLL_INTERVAL_SECONDS"
+              run_id=$(gh run list --repo "$REPO" --workflow uat-run.yaml \
+                --event workflow_dispatch --limit 50 \
+                --json databaseId,displayTitle,createdAt 2>/dev/null \
+                | jq -r --arg t "$title" \
+                    'map(select(.displayTitle == $t))
+                     | sort_by(.createdAt) | .[-1].databaseId // empty' || true)
+              [[ -n "$run_id" ]] && break
             done
-          done
+            if [[ -z "$run_id" ]]; then
+              echo "::error::Dispatched ${title} but could not resolve its run id."
+              echo "::endgroup::"
+              RESULT="unresolved"
+              return 0
+            fi
+
+            echo "Waiting on run ${run_id} ..."
+            # --exit-status is intentionally not fatal here; the conclusion is
+            # classified below. Output discarded: in a non-TTY log `gh run watch`
+            # APPENDS a full status render every refresh (no in-place redraw),
+            # flooding the drive log; we only need it to BLOCK until the run
+            # finishes. --interval 60 keeps the polling gentle on the API.
+            gh run watch "$run_id" --repo "$REPO" --interval 60 --exit-status >/dev/null 2>&1 || true
+
+            local conclusion njobs
+            conclusion=$(gh run view "$run_id" --repo "$REPO" --json conclusion --jq '.conclusion' 2>/dev/null || echo "")
+            njobs=$(gh api "repos/${REPO}/actions/runs/${run_id}/jobs" --jq '.total_count' 2>/dev/null || echo "")
+            if [[ "$conclusion" == "cancelled" && "$njobs" == "0" ]]; then
+              echo "::warning::${title} [lifecycle=${lifecycle} intent=${intent}] was superseded while pending (dropped by the reservation lease); re-dispatch when the reservation frees."
+              RESULT="superseded"
+            elif [[ "$conclusion" != "success" ]]; then
+              echo "::error::${title} [lifecycle=${lifecycle} intent=${intent}] finished with conclusion '${conclusion:-unknown}'."
+              RESULT="failed"
+            else
+              RESULT="success"
+            fi
+            echo "::endgroup::"
+            return 0
+          }
+
+          if [[ "$REUSE" == "true" ]]; then
+            # Single-cluster reuse. Provision ONE uniquely-named session cluster
+            # (…-sess-<run_id>-<reservation>, so it never collides with a prior
+            # batch's deletion tombstone), run every cell against it, and tear it
+            # down once at the end. session-up/-cell/-down all route through the
+            # same per-reservation lease and are driven back-to-back, so the held
+            # cluster is only ever consumed by one cell at a time.
+            # GITHUB_RUN_ATTEMPT is load-bearing, not decoration: GITHUB_RUN_ID is
+            # STABLE across re-runs, so without the attempt a re-run of a failed
+            # leg would re-derive the name the previous attempt's session-down just
+            # destroyed — the reused-stable-name case this design explicitly
+            # rejects (cloud deletion tombstones / stale terraform-state locks).
+            # The dispatch_key beside it already includes the attempt for the same
+            # reason. Keep the reservation as the SUFFIX: each cloud pipeline
+            # asserts session_id ends with the reservation it holds the lease for.
+            SESSION_ID="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${RESERVATION}"
+            echo "Reuse mode: session_id=${SESSION_ID}"
+            # Surface the id where a human can find it WITHOUT the drive log:
+            # if this job is killed or cancelled, the teardown below never runs and
+            # this annotation is the only handle on the leaked cluster.
+            echo "::notice::reuse session for ${RESERVATION}: session_id=${SESSION_ID}"
+            echo "::notice::reclaim with: gh workflow run uat-run.yaml -f reservation=${RESERVATION} -f lifecycle=session-down -f session_id=${SESSION_ID}"
+            {
+              echo "### Reuse session — ${RESERVATION}"
+              echo ""
+              printf '**session_id:** \`%s\`\n\n' "${SESSION_ID}"
+              echo "If this batch is cancelled or times out, reclaim the cluster with:"
+              echo ""
+              echo '```'
+              printf 'gh workflow run uat-run.yaml -f reservation=%s \\\n' "${RESERVATION}"
+              printf '  -f lifecycle=session-down -f session_id=%s\n' "${SESSION_ID}"
+              echo '```'
+              echo ""
+            } >> "$GITHUB_STEP_SUMMARY"
+
+            # Check the cutoff BEFORE provisioning: session-up alone burns ~1h of
+            # wall clock, so a late-starting leg could otherwise provision a
+            # cluster, dispatch zero cells, tear it down, and report GREEN — a
+            # full GPU lifecycle spent on no test signal.
+            if (( $(date +%s) >= deadline )); then
+              echo "::warning::dispatch cutoff already passed before session-up for ${RESERVATION};"
+              echo "::warning::skipping the leg rather than provisioning a cluster that could run no cells."
+              exit 0
+            fi
+            dispatch_and_watch "session-up" "" "${FIRST_INTENT}" "sessionup"
+            session_up_ok=""
+            if [[ "$RESULT" == "success" ]]; then
+              session_up_ok=1
+            else
+              # session-up has NO self-teardown, and it may have provisioned the
+              # cluster before a later step (Connect / guard-fresh) failed — so a
+              # failed session-up can still leave a held cluster. Do NOT exit
+              # here: fall through to the unconditional session-down below, which
+              # is the only thing that reclaims that capacity. Fix the provision
+              # (or unset nightly-reuse-cluster) if this recurs.
+              echo "::error::session-up failed for ${RESERVATION}; skipping cells and tearing the (possibly partially-provisioned) session cluster down."
+              leg_failed=1
+            fi
+
+            # Version outer / intent inner (same ordering as per-cell), so a
+            # time-box drop sheds the OLDEST release cells first. Each cell
+            # uninstalls the stack + recycles the GPU nodes on its own runner
+            # (uat-<cloud>.yaml), so the next cell finds a clean, fresh cluster.
+            cell=0
+            if [[ -n "$session_up_ok" ]]; then
+              for ver in "${versions[@]}"; do
+                # Per-cell intents (the schedule already applied the
+                # nightly-intent-min-versions gate); a fully-gated release cell
+                # has none and is skipped without consuming the time-box.
+                mapfile -t cell_intents < <(jq -r --arg r "$RESERVATION" --arg v "$ver" \
+                  '.[$r][] | select(.aicr_version == $v) | .intents[]' <<<"$schedule")
+                (( ${#cell_intents[@]} == 0 )) && continue
+                for intent in "${cell_intents[@]}"; do
+                  if (( $(date +%s) >= deadline )); then
+                    echo "::notice::Dispatch cutoff reached (time-box or drive-job budget) — dropping remaining cells for ${RESERVATION}."
+                    break 2
+                  fi
+                  cell=$((cell + 1))
+                  dispatch_and_watch "session-cell" "$ver" "$intent" "cell-${cell}"
+                  case "$RESULT" in
+                    unresolved)
+                      # Stop dispatching cells (an unwatched cell can hold the
+                      # pending slot and break ordering), but STILL tear the
+                      # session cluster down below.
+                      echo "::error::stopping cells for ${RESERVATION} to preserve ordering; proceeding to session teardown."
+                      leg_failed=1
+                      break 2
+                      ;;
+                    superseded)
+                      # Benign in the per-cell model (a superseded run held
+                      # nothing), but NOT here: it means a third contender took
+                      # the per-reservation lease while our session cluster is
+                      # standing and holding capacity. Continuing would race that
+                      # run for the shared cluster, so cut the leg short and go
+                      # straight to teardown.
+                      echo "::error::a session cell was superseded — another run holds the ${RESERVATION} lease"
+                      echo "::error::while this batch's cluster is live; stopping cells and tearing down."
+                      leg_failed=1
+                      break 2
+                      ;;
+                    failed)
+                      # In reuse mode a failed cell can leave the SHARED cluster
+                      # dirty (its uninstall/recycle may not have completed), and
+                      # every later cell then fails its freshness guard. Say so
+                      # once, here, so the cascade is not read as N independent
+                      # regressions in the versions those cells were testing.
+                      leg_failed=1
+                      echo "::warning::cell ${cell} failed on the shared session cluster; if its cleanup did not"
+                      echo "::warning::complete, later cells fail guard-fresh as fallout, not as their own regressions."
+                      ;;
+                  esac
+                done
+              done
+            fi
+
+            # ALWAYS tear down the shared cluster — whether session-up failed,
+            # cells failed, or the time-box dropped cells — so a reuse leg never
+            # leaks the held cluster. session-down is idempotent: an actuator
+            # destroy of a never-provisioned (or already-gone) cluster is a
+            # harmless no-op, so it is safe to run even after a session-up
+            # failure.
+            if (( cell == 0 )); then
+              echo "::warning::reuse leg for ${RESERVATION} dispatched ZERO cells (cutoff reached or"
+              echo "::warning::session-up failed) — provisioned and destroyed a cluster with no test signal."
+              leg_failed=1
+            fi
+
+            dispatch_and_watch "session-down" "" "${FIRST_INTENT}" "sessiondown"
+            if [[ "$RESULT" != "success" ]]; then
+              echo "::error::session-down failed for ${RESERVATION}; shared cluster (session_id=${SESSION_ID}) may be leaking."
+              echo "::error::tear it down manually: uat-run lifecycle=session-down -f session_id=${SESSION_ID}"
+              leg_failed=1
+            fi
+          else
+            # Per-cell provisioning (the pre-reuse default): each (version ×
+            # intent) is a full provision→CUJ→teardown dispatched through the
+            # shared lease, so the intents serialize automatically. Version outer
+            # / intent inner so a time-box drop sheds the OLDEST release cells
+            # first — never main's inference.
+            cell=0
+            for ver in "${versions[@]}"; do
+              # Per-cell intents (the schedule already applied the
+              # nightly-intent-min-versions gate); a fully-gated release cell has
+              # none and is skipped without consuming the time-box.
+              mapfile -t cell_intents < <(jq -r --arg r "$RESERVATION" --arg v "$ver" \
+                '.[$r][] | select(.aicr_version == $v) | .intents[]' <<<"$schedule")
+              (( ${#cell_intents[@]} == 0 )) && continue
+              for intent in "${cell_intents[@]}"; do
+                if (( $(date +%s) >= deadline )); then
+                  echo "::notice::Dispatch cutoff reached (time-box or drive-job budget) — dropping remaining cells for ${RESERVATION}."
+                  break 2
+                fi
+                cell=$((cell + 1))
+                dispatch_and_watch "nightly" "$ver" "$intent" "${cell}"
+                case "$RESULT" in
+                  unresolved)
+                    # Fail the leg rather than continue: an unwatched run can
+                    # hold the reservation's pending slot and let a later (lower-
+                    # priority) cell supersede it, breaking version ordering.
+                    echo "::error::stopping this reservation leg to preserve version ordering."
+                    exit 1
+                    ;;
+                  failed) leg_failed=1 ;;
+                esac
+              done
+            done
+          fi
 
           if [[ -n "$leg_failed" ]]; then
-            echo "::error::One or more version cells failed for ${RESERVATION}."
+            echo "::error::One or more cells failed for ${RESERVATION}."
             exit 1
           fi
