@@ -1,0 +1,796 @@
+<!DOCTYPE html>
+<!--
+ Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
+-->
+
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AICR · Onboarding — slides</title>
+<style>
+  :root {
+    --bg: #0b0d10;
+    --panel: #14181d;
+    --panel-2: #1b2026;
+    --border: #2a313a;
+    --text: #e6edf3;
+    --dim: #9aa7b4;
+    --green: #76b900;
+    --green-bright: #93d22a;
+    --green-tint: rgba(118, 185, 0, 0.12);
+    --amber: #e3a008;
+    --amber-tint: rgba(227, 160, 8, 0.12);
+    --red: #e5534b;
+    --sans: "NVIDIA Sans", "NVIDIASans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --mono: "JetBrains Mono", "SFMono-Regular", ui-monospace, Menlo, Consolas, "Liberation Mono", monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; overflow: hidden;
+    background: var(--bg); color: var(--text);
+    font-family: var(--sans); font-size: 16px; line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--green-bright); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code.inl { font-family: var(--mono); font-size: 0.9em; background: var(--panel-2); border: 1px solid var(--border); padding: 1px 6px; border-radius: 5px; }
+  strong { color: var(--text); }
+  em { color: var(--dim); }
+
+  /* ---- chrome ---- */
+  .deck-top {
+    position: fixed; top: 0; left: 0; right: 0; height: 48px; z-index: 30;
+    display: flex; align-items: center; gap: 12px; padding: 0 22px;
+    background: rgba(11,13,16,0.9); border-bottom: 1px solid var(--border);
+  }
+  .deck-top .brand { font-weight: 700; letter-spacing: 0.02em; font-size: 14px; }
+  .deck-top .brand .sub { color: var(--dim); font-weight: 500; }
+  .deck-top .sect { margin-left: auto; color: var(--green-bright); font-family: var(--mono); font-size: 12.5px; }
+
+  .deck-bottom {
+    position: fixed; bottom: 3px; left: 0; right: 0; height: 50px; z-index: 30;
+    display: flex; align-items: center; gap: 16px; padding: 0 22px;
+    background: rgba(11,13,16,0.9); border-top: 1px solid var(--border);
+  }
+  .navbtn {
+    font-size: 22px; line-height: 1; color: var(--text); background: var(--panel-2);
+    border: 1px solid var(--border); border-radius: 8px; width: 40px; height: 32px;
+    cursor: pointer; user-select: none;
+  }
+  .navbtn:hover { color: var(--green-bright); border-color: var(--green); }
+  .deck-bottom .meter { margin: 0 auto; display: flex; align-items: center; gap: 16px; }
+  .deck-bottom #counter { font-family: var(--mono); font-size: 13px; color: var(--text); }
+  .deck-bottom .hint { font-family: var(--mono); font-size: 11.5px; color: var(--dim); }
+  .progress { position: fixed; bottom: 0; left: 0; right: 0; height: 3px; background: var(--border); z-index: 31; }
+  .progress > i { display: block; height: 100%; width: 0; background: var(--green); transition: width 0.2s ease; }
+
+  /* ---- slides ---- */
+  .slide {
+    position: fixed; inset: 0; z-index: 10;
+    display: none; flex-direction: column; justify-content: center; align-items: center;
+    padding: 70px 48px 80px;
+  }
+  .slide.active { display: flex; }
+  .slide-inner { width: 100%; max-width: 1000px; max-height: 86vh; overflow-y: auto; }
+  .slide.center .slide-inner { text-align: center; }
+
+  .label { font-family: var(--mono); font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--green); margin-bottom: 8px; }
+  .slide h1 { font-size: clamp(38px, 6vw, 62px); line-height: 1.08; margin: 0 0 18px; font-weight: 800; letter-spacing: -0.02em; }
+  .slide h2 { font-size: clamp(26px, 3.6vw, 40px); margin: 0 0 16px; font-weight: 750; letter-spacing: -0.01em; }
+  .slide p { color: #cdd6df; max-width: 74ch; }
+  .lede { font-size: clamp(17px, 2.2vw, 22px); color: var(--dim); margin: 0 auto 22px; max-width: 62ch; }
+  .hint { color: var(--dim); font-family: var(--mono); font-size: 12.5px; }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin-top: 8px; }
+  .chip { font-size: 14px; color: var(--text); background: var(--panel-2); border: 1px solid var(--border); padding: 6px 13px; border-radius: 999px; }
+  .chip b { color: var(--green-bright); font-weight: 600; }
+
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 16px 0; }
+  .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; margin: 16px 0; }
+  @media (max-width: 820px) { .grid2, .grid3 { grid-template-columns: 1fr; } }
+  .mini { background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; text-align: left; }
+  .mini h4 { margin: 0 0 6px; font-size: 15px; color: var(--green-bright); }
+  .mini p { font-size: 14px; color: var(--dim); margin: 0; }
+  .mini.amber { border-color: rgba(227,160,8,0.4); }
+  .mini.amber h4 { color: var(--amber); }
+
+  .note { border-left: 3px solid var(--green); background: var(--green-tint); padding: 13px 18px; border-radius: 0 10px 10px 0; margin: 16px 0; text-align: left; }
+  .note.honest { border-left-color: var(--amber); background: var(--amber-tint); }
+  .note .t { font-weight: 700; display: block; margin-bottom: 4px; }
+  .note.honest .t { color: var(--amber); }
+  .note.honest .t::before { content: "⚖  "; }
+  .note .t.info { color: var(--green-bright); }
+
+  .code { position: relative; background: #0e1116; border: 1px solid var(--border); border-radius: 10px; margin: 14px 0; overflow: hidden; text-align: left; }
+  .code .bar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--panel-2); }
+  .code .dot { width: 11px; height: 11px; border-radius: 50%; }
+  .code .bar .name { margin-left: 6px; font-family: var(--mono); font-size: 12px; color: var(--dim); }
+  .code .bar .copy { margin-left: auto; font-family: var(--mono); font-size: 11.5px; color: var(--dim); background: transparent; border: 1px solid var(--border); border-radius: 6px; padding: 3px 9px; cursor: pointer; }
+  .code .bar .copy:hover { color: var(--green-bright); border-color: var(--green); }
+  pre { margin: 0; padding: 15px; overflow-x: auto; font-family: var(--mono); font-size: 13.5px; line-height: 1.6; color: #d7dee6; }
+  pre .p { color: var(--green-bright); } pre .c { color: #6b7785; } pre .g { color: var(--green); }
+  pre .a { color: var(--amber); } pre .r { color: var(--red); } pre .d { color: var(--dim); }
+
+  table.r { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 15px; }
+  table.r th, table.r td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--border); }
+  table.r th { color: var(--dim); font-weight: 600; font-size: 12.5px; text-transform: uppercase; letter-spacing: 0.04em; }
+  table.r td code { font-family: var(--mono); font-size: 12.5px; }
+  .ok { color: var(--green-bright); } .warn { color: var(--amber); } .bad { color: var(--red); } .d { color: var(--dim); }
+
+  /* ---- diagrams ---- */
+  svg.diagram { display: block; margin: 4px auto; width: auto; height: auto; max-width: min(940px, 90vw); max-height: 46vh; }
+  figure.fig { margin: 0; }
+  .fig figcaption { color: var(--dim); font-size: 13.5px; text-align: center; padding: 8px 0 0; }
+  .diagram text { font-family: var(--sans); fill: var(--text); }
+  .diagram .nlabel { font-weight: 650; font-size: 14px; }
+  .diagram .nsub { fill: var(--dim); font-size: 11.5px; }
+  .diagram .mono { font-family: var(--mono); }
+  .diagram .edge { stroke: #46525f; stroke-width: 1.6; fill: none; }
+  .diagram .edge-g { stroke: var(--green); stroke-width: 2; fill: none; }
+  .diagram .elabel { fill: var(--dim); font-size: 11px; }
+  .diagram .node { fill: var(--panel-2); stroke: var(--border); }
+  .diagram .node-g { fill: rgba(118,185,0,0.10); stroke: var(--green); }
+  .diagram .node-a { fill: rgba(227,160,8,0.10); stroke: var(--amber); }
+  .diagram .ttl-g { fill: var(--green-bright); }
+  .diagram .ttl-a { fill: var(--amber); }
+  .footlinks { margin-top: 18px; font-size: 14px; color: var(--dim); }
+  .footlinks a { margin: 0 8px; }
+</style>
+</head>
+<body>
+
+<div class="deck-top">
+  <span class="brand">NVIDIA AICR<span class="sub">&nbsp;· Onboarding</span></span>
+  <span class="sect" id="sect"></span>
+</div>
+
+<!-- 1 · TITLE -->
+<section class="slide center" data-title="">
+  <div class="slide-inner">
+    <div class="label">NVIDIA AI Cluster Runtime</div>
+    <h1>Onboarding to AICR</h1>
+    <p class="lede">A five-module tour of AICR: what it is, how recipes resolve, how validation and the
+      dashboard work, how trust is proven, and how we build and ship it.</p>
+    <div class="chips">
+      <span class="chip"><b>Snapshot</b> → Recipe → Validate → Bundle</span>
+      <span class="chip"><b>Generator</b>, not a deployer</span>
+      <span class="chip"><b>Reproducible</b> + verifiable</span>
+    </div>
+    <p class="hint" style="margin-top:30px">←  →  or  Space  to navigate  ·  F for fullscreen  ·  paired with <code class="inl">demos/onboarding.md</code></p>
+  </div>
+</section>
+
+<!-- 2 · AGENDA -->
+<section class="slide" data-title="Agenda">
+  <div class="slide-inner">
+    <div class="label">The curriculum</div>
+    <h2>Five modules, one system</h2>
+    <table class="r">
+      <thead><tr><th>#</th><th>Module</th><th>What you leave with</th></tr></thead>
+      <tbody>
+        <tr><td class="ok">M1</td><td>Why AICR &amp; the four-stage model</td><td>The mental model + what AICR is <em>not</em></td></tr>
+        <tr><td class="ok">M2</td><td>Recipes, overlays, mixins → bundles</td><td>How config resolves; the CLI verbs</td></tr>
+        <tr><td class="ok">M3</td><td>Validation, UAT &amp; the dashboard</td><td>Go/no-go signal you can read</td></tr>
+        <tr><td class="ok">M4</td><td>Supply chain: provenance + evidence</td><td>Two proofs; the trust ladder</td></tr>
+        <tr><td class="ok">M5</td><td>Dev practices, CI &amp; release</td><td><code>make qualify</code> = CI; the release runbook</td></tr>
+      </tbody>
+    </table>
+    <div class="note">
+      <span class="t info">Three through-lines, repeated every module</span>
+      1 — AICR is a design-time <strong>generator</strong>, not a deployment engine.
+      2 — Four stages, one artifact each: <strong>Snapshot → Recipe → Validate → Bundle</strong>.
+      3 — The <strong>boundary principle</strong>: <code class="inl">pkg/cli</code>/<code class="inl">pkg/server</code> hold no logic; it lives in functional packages behind <code class="inl">pkg/client/v1</code>.
+    </div>
+  </div>
+</section>
+
+<!-- ===================== MODULE 1 ===================== -->
+<section class="slide center" data-title="M1 · Why AICR">
+  <div class="slide-inner">
+    <div class="label">Module 1</div>
+    <h1>Why AICR &amp; the four-stage model</h1>
+    <p class="lede">Running GPU-accelerated Kubernetes reliably is hard because small version differences cause
+      expensive-to-reproduce failures. AICR turns the known-good combinations into a reproducible, verifiable artifact.</p>
+  </div>
+</section>
+
+<!-- 1.1 is/is-not -->
+<section class="slide" data-title="M1 · Why AICR">
+  <div class="slide-inner">
+    <div class="label">01 · Framing</div>
+    <h2>A configuration generator — and what it is not</h2>
+    <div class="grid2">
+      <div class="mini"><h4>AICR is…</h4><p>A generator of validated, version-locked config artifacts (Helm values, Argo CD <code class="inl">Application</code>, Flux <code class="inl">HelmRelease</code>, <code class="inl">helmfile.yaml</code>) — and a validator that proves the config was materialized and performs.</p></div>
+      <div class="mini amber"><h4>AICR is not…</h4><p>Not a distro, not a provisioner or lifecycle manager, not a control plane, not config management. It never runs <code class="inl">kubectl apply</code>, never reconciles.</p></div>
+    </div>
+    <div class="note">
+      <span class="t info">The hook</span>
+      You bring the GPU cluster and your GitOps tooling; AICR emits the config your tools deploy — and can prove it's correct.
+      Its in-cluster footprint is transient: a one-shot snapshot Job, plus short-lived validator Jobs during validate — never a running controller.
+    </div>
+    <p class="hint">Source: <code class="inl">../README.md</code> "What AICR Is Not" · <code class="inl">../docs/contributor/index.md</code></p>
+  </div>
+</section>
+
+<!-- 1.2 four-stage SVG -->
+<section class="slide" data-title="M1 · Why AICR">
+  <div class="slide-inner">
+    <div class="label">02 · The model</div>
+    <h2>Four stages, one artifact each</h2>
+    <figure class="fig">
+      <svg class="diagram" viewBox="0 0 860 150" role="img" aria-label="Snapshot to Recipe to Validate to Bundle pipeline">
+        <defs>
+          <marker id="m1" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 Z" fill="#46525f"/></marker>
+        </defs>
+        <rect class="node" x="14"  y="40" width="172" height="60" rx="10"/>
+        <text class="nlabel" x="100" y="66" text-anchor="middle">Snapshot</text>
+        <text class="nsub"   x="100" y="86" text-anchor="middle">capture cluster state</text>
+        <rect class="node" x="234" y="40" width="172" height="60" rx="10"/>
+        <text class="nlabel" x="320" y="66" text-anchor="middle">Recipe</text>
+        <text class="nsub"   x="320" y="86" text-anchor="middle">version-locked config</text>
+        <rect class="node" x="454" y="40" width="172" height="60" rx="10"/>
+        <text class="nlabel" x="540" y="66" text-anchor="middle">Validate</text>
+        <text class="nsub"   x="540" y="86" text-anchor="middle">constraints + phases</text>
+        <rect class="node" x="674" y="40" width="172" height="60" rx="10"/>
+        <text class="nlabel" x="760" y="66" text-anchor="middle">Bundle</text>
+        <text class="nsub"   x="760" y="86" text-anchor="middle">deployment artifacts</text>
+        <line class="edge" x1="186" y1="70" x2="228" y2="70" marker-end="url(#m1)"/>
+        <line class="edge" x1="406" y1="70" x2="448" y2="70" marker-end="url(#m1)"/>
+        <line class="edge" x1="626" y1="70" x2="668" y2="70" marker-end="url(#m1)"/>
+      </svg>
+      <figcaption>Each stage is independently invocable and produces a serializable artifact — file, stdout, or a <code class="inl">cm://namespace/name</code> ConfigMap.</figcaption>
+    </figure>
+    <div class="note">
+      <span class="t info">The payoff</span>
+      Same inputs → <strong>identical</strong> outputs, always. One validated recipe re-renders for whatever pipeline you run.
+    </div>
+  </div>
+</section>
+
+<!-- 1.3 boundary principle -->
+<section class="slide" data-title="M1 · Why AICR">
+  <div class="slide-inner">
+    <div class="label">03 · Architecture</div>
+    <h2>The boundary principle</h2>
+    <p class="lede"><code class="inl">pkg/cli</code> and <code class="inl">pkg/server</code> carry <strong>zero</strong> business logic — they parse input, format output, map exit codes.
+      Everything real lives in functional packages behind the <code class="inl">pkg/client/v1</code> facade, so CLI and the <code class="inl">aicrd</code> REST server share it.</p>
+    <div class="grid3">
+      <div class="mini"><h4>Boundary</h4><p><code class="inl">pkg/cli</code> · <code class="inl">pkg/server</code> → <code class="inl">pkg/client/v1</code></p></div>
+      <div class="mini"><h4>Logic</h4><p><code class="inl">recipe</code> · <code class="inl">collector</code> · <code class="inl">validator</code> · <code class="inl">bundler</code></p></div>
+      <div class="mini"><h4>Supply chain</h4><p><code class="inl">evidence</code> · <code class="inl">oci</code> · <code class="inl">trust</code> · <code class="inl">build</code></p></div>
+    </div>
+    <div class="note">
+      <span class="t info">Habit to build</span>
+      When a demo shows a verb, name the package doing the work: <code class="inl">recipe</code>→<code class="inl">pkg/recipe</code>, <code class="inl">validate</code>→<code class="inl">pkg/validator</code>, <code class="inl">bundle</code>→<code class="inl">pkg/bundler</code>. It's the single most enforced rule in review.
+    </div>
+  </div>
+</section>
+
+<!-- 1.4 supported surface -->
+<section class="slide" data-title="M1 · Why AICR">
+  <div class="slide-inner">
+    <div class="label">04 · Breadth</div>
+    <h2>Why the recipe engine has to exist</h2>
+    <table class="r">
+      <thead><tr><th>Dimension</th><th>Values</th></tr></thead>
+      <tbody>
+        <tr><td>Services</td><td>AKS · BCM · EKS · GKE · Kind · LKE · OCP · OKE</td></tr>
+        <tr><td>Accelerators</td><td>A100 · B200 · GB200 · H100 · H200 · L40 · RTX&nbsp;PRO&nbsp;6000</td></tr>
+        <tr><td>Operating systems</td><td>Amazon Linux · COS · RHEL · Talos · Ubuntu</td></tr>
+        <tr><td>Workload intents</td><td>Inference · Training</td></tr>
+        <tr><td>Platforms</td><td>Dynamo · Kubeflow · NIM · Run:ai · Slurm (Slinky)</td></tr>
+      </tbody>
+    </table>
+    <p class="hint">The combinatorial matrix is exactly why the recipe engine (M2) and the evidence model (M4) exist. Source: <code class="inl">../README.md</code> · <code class="inl">api/aicr/v1/server.yaml</code> enums.</p>
+  </div>
+</section>
+
+<!-- ===================== MODULE 2 ===================== -->
+<section class="slide center" data-title="M2 · Recipes">
+  <div class="slide-inner">
+    <div class="label">Module 2</div>
+    <h1>Recipes, overlays, mixins → bundles</h1>
+    <p class="lede">A query goes in; a resolved, hydrated config comes out. It's a compiler, not a template renderer —
+      and all the config you touch lives in git under <code class="inl">recipes/</code>.</p>
+  </div>
+</section>
+
+<!-- 2.1 compiler -->
+<section class="slide" data-title="M2 · Recipes">
+  <div class="slide-inner">
+    <div class="label">05 · The idea</div>
+    <h2>A compiler, not templates</h2>
+    <figure class="fig">
+      <svg class="diagram" viewBox="0 0 860 132" role="img" aria-label="Criteria in, resolved recipe out, bundle out">
+        <defs>
+          <marker id="m2" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 Z" fill="#46525f"/></marker>
+          <marker id="m2g" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 Z" fill="#76b900"/></marker>
+        </defs>
+        <rect class="node" x="14"  y="34" width="210" height="64" rx="10"/>
+        <text class="nlabel" x="119" y="60" text-anchor="middle">Criteria</text>
+        <text class="nsub mono" x="119" y="80" text-anchor="middle">service·accel·os·intent·platform</text>
+        <rect class="node-g" x="325" y="34" width="210" height="64" rx="10"/>
+        <text class="nlabel ttl-g" x="430" y="60" text-anchor="middle">RecipeResult</text>
+        <text class="nsub" x="430" y="80" text-anchor="middle">merged spec + order + phases</text>
+        <rect class="node" x="636" y="34" width="210" height="64" rx="10"/>
+        <text class="nlabel" x="741" y="60" text-anchor="middle">Bundle</text>
+        <text class="nsub" x="741" y="80" text-anchor="middle">helm / argocd / flux / helmfile</text>
+        <line class="edge-g" x1="224" y1="66" x2="319" y2="66" marker-end="url(#m2g)"/>
+        <line class="edge" x1="535" y1="66" x2="630" y2="66" marker-end="url(#m2)"/>
+      </svg>
+      <figcaption><code class="inl">aicr recipe</code> resolves; <code class="inl">aicr bundle</code> serializes. No Go code for a normal chart bump.</figcaption>
+    </figure>
+    <p class="hint">Source: <code class="inl">../docs/contributor/recipe.md</code> · <code class="inl">demos/recipe-data-architecture.md</code></p>
+  </div>
+</section>
+
+<!-- 2.2 three layers -->
+<section class="slide" data-title="M2 · Recipes">
+  <div class="slide-inner">
+    <div class="label">06 · The data model</div>
+    <h2>Three layers, all in git</h2>
+    <table class="r">
+      <thead><tr><th>Layer</th><th>Path</th><th>Role</th></tr></thead>
+      <tbody>
+        <tr><td><b>Registry</b></td><td><code>recipes/registry.yaml</code></td><td>Component catalog + <span class="ok">single source of truth for versions</span></td></tr>
+        <tr><td><b>Overlays</b></td><td><code>recipes/overlays/</code></td><td>Criteria-matched recipes; single-parent <code>spec.base</code></td></tr>
+        <tr><td><b>Mixins</b></td><td><code>recipes/mixins/</code></td><td><code>constraints</code> + <code>componentRefs</code> only; additive</td></tr>
+        <tr><td><b>Values</b></td><td><code>recipes/components/</code></td><td>Per-component <code>values.yaml</code>, merged at bundle time</td></tr>
+      </tbody>
+    </table>
+    <div class="note">
+      <span class="t info">Decision matrix</span>
+      Change <strong>all recipes</strong> → registry. Change <strong>one shape</strong> → overlay. Share <strong>across ≥2 leaves</strong> → mixin.
+      Merge order: base chain → mixins → profile → registry defaults → CLI <code class="inl">--set</code> (later wins).
+    </div>
+  </div>
+</section>
+
+<!-- 2.3 inheritance chain -->
+<section class="slide" data-title="M2 · Recipes">
+  <div class="slide-inner">
+    <div class="label">07 · Inheritance</div>
+    <h2>A real chain: leaves declare only what differs</h2>
+    <div class="code">
+      <div class="bar"><span class="dot" style="background:#e5534b"></span><span class="dot" style="background:#e3a008"></span><span class="dot" style="background:#76b900"></span><span class="name">appliedOverlays</span><button class="copy">copy</button></div>
+<pre><span class="c"># base → eks → eks-training → gb200-eks-training → gb200-eks-ubuntu-training</span>
+<span class="p">$</span> aicr recipe --service eks --accelerator gb200 --os ubuntu \
+      --intent training | yq .metadata.appliedOverlays</pre>
+    </div>
+    <div class="grid2">
+      <div class="mini"><h4>Leaf · gb200-eks-ubuntu-training.yaml</h4><p><code class="inl">componentRefs: []</code>, pulls in the <code class="inl">os-ubuntu</code> mixin, adds a K8s ≥ 1.34 constraint. Binds a chain + mixin under one criteria fingerprint.</p></div>
+      <div class="mini"><h4>Intermediate · gb200-eks-training.yaml</h4><p>Where the GPU-Operator prereqs and the deployment/perf/conformance validation blocks actually live. OS-variant leaves inherit it.</p></div>
+    </div>
+    <p class="hint">Criteria are <strong>not</strong> inherited. Mixins carry constraints + componentRefs only. See <code class="inl">../recipes/overlays/</code>, <code class="inl">../recipes/mixins/</code>.</p>
+  </div>
+</section>
+
+<!-- 2.4 asymmetric matching -->
+<section class="slide" data-title="M2 · Recipes">
+  <div class="slide-inner">
+    <div class="label">08 · The safety property</div>
+    <h2>Asymmetric matching</h2>
+    <p class="lede">Recipe-side <code class="inl">any</code> is a wildcard; query-side <code class="inl">any</code> is <strong>not</strong>. A generic query can never silently
+      resolve to a hardware-specific recipe.</p>
+    <div class="code">
+      <div class="bar"><span class="dot" style="background:#e5534b"></span><span class="dot" style="background:#e3a008"></span><span class="dot" style="background:#76b900"></span><span class="name">generic vs specific</span><button class="copy">copy</button></div>
+<pre><span class="p">$</span> aicr recipe --service eks | yq .metadata.appliedOverlays
+<span class="c"># → base + eks only. NEVER a GB200/H100-specific leaf.</span>
+
+<span class="p">$</span> aicr recipe --service eks --accelerator h100 --intent training ...
+<span class="c"># → the full, specialized chain merges in.</span></pre>
+    </div>
+    <p class="hint"><code class="inl">Specificity()</code> orders the merge; wildcard overlays (e.g. <code class="inl">gb200-any.yaml</code>) apply automatically. Source: <code class="inl">../pkg/recipe/criteria.go</code>.</p>
+  </div>
+</section>
+
+<!-- 2.5 recipe->bundle + deployers -->
+<section class="slide" data-title="M2 · Recipes">
+  <div class="slide-inner">
+    <div class="label">09 · The handoff</div>
+    <h2>Recipe → Bundle: same config, any pipeline</h2>
+    <div class="chips" style="justify-content:flex-start">
+      <span class="chip"><b>helm</b> default</span>
+      <span class="chip"><b>argocd</b> app-of-apps</span>
+      <span class="chip"><b>argocd-helm</b></span>
+      <span class="chip"><b>flux</b> HelmRelease</span>
+      <span class="chip"><b>helmfile</b></span>
+    </div>
+    <div class="code">
+      <div class="bar"><span class="dot" style="background:#e5534b"></span><span class="dot" style="background:#e3a008"></span><span class="dot" style="background:#76b900"></span><span class="name">bundle</span><button class="copy">copy</button></div>
+<pre><span class="p">$</span> aicr bundle -r recipe.yaml --deployer helm   -o ./bundles
+<span class="p">$</span> aicr bundle -r recipe.yaml --deployer argocd --repo https://github.com/org/gitops.git -o ./bundles
+
+<span class="c"># overrides: --set (scalar) · --set-json/--set-file (lists+objects) · --dynamic (install-time)</span>
+<span class="p">$</span> aicr bundle -r recipe.yaml --set gpuoperator:driver.version=570.86.16 -o ./bundles</pre>
+    </div>
+    <p class="hint">Resolution stops at metadata; per-component values merge at <strong>bundle</strong> time. "Recipe = what, bundler = how." See <code class="inl">../docs/user/bundling.md</code>.</p>
+  </div>
+</section>
+
+<!-- ===================== MODULE 3 ===================== -->
+<section class="slide center" data-title="M3 · Validation">
+  <div class="slide-inner">
+    <div class="label">Module 3</div>
+    <h1>Validation, UAT &amp; the dashboard</h1>
+    <p class="lede">One command answers "is this GPU cluster fit to run this workload?" — reproducibly. Its signed result
+      rolls up to a public dashboard anyone can read.</p>
+  </div>
+</section>
+
+<!-- 3.1 phases -->
+<section class="slide" data-title="M3 · Validation">
+  <div class="slide-inner">
+    <div class="label">10 · aicr validate</div>
+    <h2>Phases run in a fixed order</h2>
+    <figure class="fig">
+      <svg class="diagram" viewBox="0 0 860 150" role="img" aria-label="Readiness then deployment then conformance then performance">
+        <defs>
+          <marker id="m3" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 Z" fill="#46525f"/></marker>
+        </defs>
+        <rect class="node-g" x="14"  y="40" width="172" height="60" rx="10"/>
+        <text class="nlabel ttl-g" x="100" y="66" text-anchor="middle">Readiness</text>
+        <text class="nsub" x="100" y="86" text-anchor="middle">always first · fail-closed</text>
+        <rect class="node" x="234" y="40" width="172" height="60" rx="10"/>
+        <text class="nlabel" x="320" y="66" text-anchor="middle">Deployment</text>
+        <text class="nsub" x="320" y="86" text-anchor="middle">installed &amp; healthy</text>
+        <rect class="node" x="454" y="40" width="172" height="60" rx="10"/>
+        <text class="nlabel" x="540" y="66" text-anchor="middle">Conformance</text>
+        <text class="nsub" x="540" y="86" text-anchor="middle">DRA · gang sched</text>
+        <rect class="node" x="674" y="40" width="172" height="60" rx="10"/>
+        <text class="nlabel" x="760" y="66" text-anchor="middle">Performance</text>
+        <text class="nsub" x="760" y="86" text-anchor="middle">NCCL · inference</text>
+        <line class="edge" x1="186" y1="70" x2="228" y2="70" marker-end="url(#m3)"/>
+        <line class="edge" x1="406" y1="70" x2="448" y2="70" marker-end="url(#m3)"/>
+        <line class="edge" x1="626" y1="70" x2="668" y2="70" marker-end="url(#m3)"/>
+      </svg>
+      <figcaption>Readiness is inline (no containers); the three phases run one K8s Job per check. <strong>Performance runs last</strong> — its benchmark saturates every GPU and async-releases DRA claims.</figcaption>
+    </figure>
+    <table class="r">
+      <thead><tr><th>Exit</th><th>Meaning (gate on these)</th></tr></thead>
+      <tbody>
+        <tr><td class="ok"><code>0</code></td><td>pass / skip</td></tr>
+        <tr><td class="bad"><code>2</code></td><td>readiness or invalid — fail-closed even with <code>--fail-on-error=false</code></td></tr>
+        <tr><td class="warn"><code>5</code></td><td>timeout (validator section / context deadline)</td></tr>
+        <tr><td class="warn"><code>8</code></td><td>phase check failed</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- 3.2 four surfaces -->
+<section class="slide" data-title="M3 · Validation">
+  <div class="slide-inner">
+    <div class="label">11 · Validator surfaces</div>
+    <h2>Four surfaces — picking the wrong one is the #1 wasted PR</h2>
+    <div class="grid2">
+      <div class="mini"><h4>1 · Constraint (declarative)</h4><p>An expression in an overlay <code class="inl">validation:</code> block, evaluated against a snapshot value. No code. <code class="inl">pkg/constraints</code></p></div>
+      <div class="mini"><h4>2 · Container check</h4><p>A Go func run as one K8s Job per check against a live cluster. <code class="inl">recipes/validators/catalog.yaml</code></p></div>
+      <div class="mini"><h4>3 · Component validation</h4><p>In-process Go run at <code class="inl">aicr bundle</code> time — catches misconfig before deploy.</p></div>
+      <div class="mini"><h4>4 · Chainsaw health check</h4><p>Read-only Chainsaw YAML in <code class="inl">recipes/checks/</code>, under a true assert/error allowlist.</p></div>
+    </div>
+    <div class="note">
+      <span class="t info">Rule of thumb</span>
+      Declarative snapshot assertion → <strong>constraint</strong>. Active probe of a live cluster → <strong>check</strong>.
+      The chainsaw allowlist fails closed on every unknown/future op (it runs under cluster-admin). Source: <code class="inl">../docs/contributor/validator.md</code>.
+    </div>
+  </div>
+</section>
+
+<!-- 3.3 dashboard -->
+<section class="slide" data-title="M3 · Validation">
+  <div class="slide-inner">
+    <div class="label">12 · validation.aicr.run</div>
+    <h2>The evidence corroboration dashboard</h2>
+    <p class="lede">"How many independent signed parties ran this recipe — and do they agree?" Rebuilt deterministically on every
+      merge; counts distinct verified <strong>signers</strong>, never re-runs.</p>
+    <table class="r">
+      <thead><tr><th>State</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td class="ok">CONFIRMED</td><td>≥2 distinct signers ran it, all passed — strongest signal</td></tr>
+        <tr><td>SINGLE</td><td>exactly 1 signer passed — uncorroborated</td></tr>
+        <tr><td class="warn">CONTESTED</td><td>signers disagree — surfaced first-class, <strong>never averaged away</strong></td></tr>
+        <tr><td class="bad">FAILING</td><td>every signer that ran it failed</td></tr>
+        <tr><td class="d">UNTESTED</td><td>no signer ran it — a coverage gap, <strong>not a pass</strong></td></tr>
+      </tbody>
+    </table>
+    <div class="note honest">
+      <span class="t">Ground truth</span>
+      The board reads the live <code class="inl">data/index.json</code> discovered from GCS evidence coordinates — <strong>not</strong> the OSS enum — so it can host out-of-enum values. <code class="inl">curl | jq</code> it before claiming coverage.
+    </div>
+  </div>
+</section>
+
+<!-- 3.4 triage -->
+<section class="slide" data-title="M3 · Validation">
+  <div class="slide-inner">
+    <div class="label">13 · Triage</div>
+    <h2>A red cell: product signal or infra signal?</h2>
+    <div class="grid2">
+      <div class="mini"><h4>Product signal</h4><p>AICR/recipe is actually wrong: a readiness constraint unmet, a check <strong>failed</strong> on a healthy cluster, a genuine regression (e.g. a released version predating a platform).</p></div>
+      <div class="mini amber"><h4>Infra signal</h4><p>The harness/cloud, not the product: bringup terraform failures, stale TF locks / leaked networks, capacity exhaustion, a <em>superseded</em> run, arm64 QEMU-slow builds.</p></div>
+    </div>
+    <div class="note">
+      <span class="t info">Don't conflate the four surfaces</span>
+      Recipe Health = offline "does it resolve / charts pinned". Coverage Matrix = in-repo CUJ/verb breadth. Evidence Dashboard = live corroboration. TestGrid = the future live board.
+      All anchor on the same coordinate (ADR-012). Tooling: <code class="inl">/aicr-uat-report</code>.
+    </div>
+  </div>
+</section>
+
+<!-- ===================== MODULE 4 ===================== -->
+<section class="slide center" data-title="M4 · Supply chain">
+  <div class="slide-inner">
+    <div class="label">Module 4</div>
+    <h1>Supply chain: provenance + evidence</h1>
+    <p class="lede">AICR answers two independent trust questions with two separate cryptographic chains. Learn both, and the
+      4-level trust ladder that gates a deploy.</p>
+  </div>
+</section>
+
+<!-- 4.1 two proofs -->
+<section class="slide" data-title="M4 · Supply chain">
+  <div class="slide-inner">
+    <div class="label">14 · The mental model</div>
+    <h2>Two proofs</h2>
+    <div class="grid2">
+      <div class="mini"><h4>Build provenance</h4><p><em>Where did it come from?</em> NVIDIA CI signs images/binaries at release (SLSA, SBOM, cosign keyless). Signer = NVIDIA. Tools = <code class="inl">gh attestation verify</code>, <code class="inl">cosign</code>.</p></div>
+      <div class="mini"><h4>Recipe evidence</h4><p><em>What did validation record?</em> A contributor with cluster access NVIDIA lacks signs an <code class="inl">aicr validate</code> result. Signer = the contributor. Tool = <code class="inl">aicr evidence verify</code>.</p></div>
+    </div>
+    <div class="note">
+      <span class="t info">In practice</span>
+      Proof #1 is what you hand downstream to prove NVIDIA built it. Proof #2 is what lets the project accept a recipe PR for GPU hardware no NVIDIA team can reach — without re-running it.
+    </div>
+  </div>
+</section>
+
+<!-- 4.2 provenance + L3 -->
+<section class="slide" data-title="M4 · Supply chain">
+  <div class="slide-inner">
+    <div class="label">15 · Proof #1</div>
+    <h2>Verify an image — the flag <em>is</em> the L3 check</h2>
+    <div class="code">
+      <div class="bar"><span class="dot" style="background:#e5534b"></span><span class="dot" style="background:#e3a008"></span><span class="dot" style="background:#76b900"></span><span class="name">provenance</span><button class="copy">copy</button></div>
+<pre><span class="c"># resolve tag → immutable digest, then verify SLSA Build L3 provenance</span>
+<span class="p">$</span> gh attestation verify oci://ghcr.io/nvidia/aicr@$DIGEST --repo NVIDIA/aicr \
+      --signer-workflow <span class="g">NVIDIA/aicr/.github/workflows/attest-images.yaml</span> \
+      --source-ref refs/tags/$TAG</pre>
+    </div>
+    <div class="note">
+      <span class="t info">Why L3</span>
+      Images are <strong>SLSA Build L3</strong> because a <em>reusable</em> workflow is the signing identity — the build job can't forge it. That <code class="inl">--signer-workflow</code> pin is the L3 check. Binaries are L2 (signed inline in <code class="inl">on-tag.yaml</code>). The SBOM is a <em>different</em> tool (<code class="inl">cosign</code>) against a <em>different</em> subject (the per-platform digest, not the index).
+    </div>
+  </div>
+</section>
+
+<!-- 4.3 trust ladder -->
+<section class="slide" data-title="M4 · Supply chain">
+  <div class="slide-inner">
+    <div class="label">16 · Bundle attestation</div>
+    <h2>The 4-level trust ladder</h2>
+    <table class="r">
+      <thead><tr><th>Level</th><th>Reached when…</th></tr></thead>
+      <tbody>
+        <tr><td class="ok">verified (4)</td><td>closed-world inventory + bundle attestation + NVIDIA-CI-pinned binary attestation + no external data</td></tr>
+        <tr><td>attested (3)</td><td>signed, but external <code>--data</code> present</td></tr>
+        <tr><td class="warn">unverified (2)</td><td>valid inventory, but no <code>--attest</code></td></tr>
+        <tr><td class="bad">unknown (1)</td><td>a present attestation <strong>failed</strong>, or a legacy incomplete manifest</td></tr>
+      </tbody>
+    </table>
+    <div class="code">
+      <div class="bar"><span class="dot" style="background:#e5534b"></span><span class="dot" style="background:#e3a008"></span><span class="dot" style="background:#76b900"></span><span class="name">gate</span><button class="copy">copy</button></div>
+<pre><span class="p">$</span> aicr bundle -r recipe.yaml --attest -o ./bundles
+<span class="p">$</span> aicr verify ./bundles <span class="g">--min-trust-level verified</span>   <span class="c"># default 'max' PASSES an unsigned bundle!</span></pre>
+    </div>
+    <p class="hint">A <em>failed</em> attestation is a hard <code class="inl">unknown</code>, not a soft downgrade. <code class="inl">demos/bundle-attestation.md</code></p>
+  </div>
+</section>
+
+<!-- 4.4 split-leg -->
+<section class="slide" data-title="M4 · Supply chain">
+  <div class="slide-inner">
+    <div class="label">17 · Recipe evidence</div>
+    <h2>The split-leg flow (VPN vs Sigstore egress)</h2>
+    <p class="lede">Validation lives on the VPN (where the cluster is); keyless signing needs Fulcio/Rekor, which corporate VPNs
+      routinely block. So split the legs.</p>
+    <div class="code">
+      <div class="bar"><span class="dot" style="background:#e5534b"></span><span class="dot" style="background:#e3a008"></span><span class="dot" style="background:#76b900"></span><span class="name">split-leg</span><button class="copy">copy</button></div>
+<pre><span class="c"># LEG 1 — on VPN: validate + emit an UNSIGNED, content-addressed bundle</span>
+<span class="p">$</span> aicr validate -r recipe.yaml -s snapshot.yaml --emit-attestation ./out
+
+<span class="c"># LEG 2 — off VPN: sign (keyless OIDC), push, write the pointer</span>
+<span class="p">$</span> aicr evidence publish ./out --push ghcr.io/&lt;owner&gt;/aicr-evidence
+<span class="p">$</span> aicr evidence verify recipes/evidence/&lt;recipe&gt;/&lt;src&gt;/&lt;digest&gt;.yaml</pre>
+    </div>
+    <p class="hint">The bundle is content-addressed → the digest is identical regardless of signing host; only the signature material differs. Community path signs in fork CI (<code class="inl">evidence-publish.yaml</code>).</p>
+  </div>
+</section>
+
+<!-- 4.5 honest boundary -->
+<section class="slide" data-title="M4 · Supply chain">
+  <div class="slide-inner">
+    <div class="label">18 · Be honest</div>
+    <h2>What recipe evidence does — and does not — prove</h2>
+    <div class="note honest">
+      <span class="t">The trust boundary (ADR-007)</span>
+      Recipe evidence is <strong>signer-identity-bound, not cluster-physicality-bound</strong>. It proves an OIDC identity signed a
+      <code class="inl">(recipe, snapshot, results, BOM)</code> tuple — not that the cluster physically existed. It moves the maintainer's
+      question from "did this run?" to "do I trust this signer?"
+    </div>
+    <div class="grid2">
+      <div class="mini"><h4>Where trust actually enters</h4><p>The merge-time pointer gate is <strong>structural</strong> (checks the claimed signer's slug + allowlist, no signature check). Cryptographic verification happens <strong>after merge at ingest</strong>. A lying pointer passes the gate but fails ingest.</p></div>
+      <div class="mini"><h4>The producer side teams forget</h4><p>Verification proves an artifact <em>you hold</em> is legit — it can't tell you someone signed <em>as</em> you. Keyless leaves no local trace, so AICR signs to Rekor v2 and monitors its own release identity.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== MODULE 5 ===================== -->
+<section class="slide center" data-title="M5 · Dev &amp; CI">
+  <div class="slide-inner">
+    <div class="label">Module 5</div>
+    <h1>Dev practices, CI &amp; release</h1>
+    <p class="lede">The whole philosophy is "local dev equals CI." One command reproduces the gate; one command family cuts a
+      release with SLSA L3 provenance.</p>
+  </div>
+</section>
+
+<!-- 5.1 make qualify -->
+<section class="slide" data-title="M5 · Dev &amp; CI">
+  <div class="slide-inner">
+    <div class="label">19 · The gate</div>
+    <h2><code>make qualify</code> = CI, locally</h2>
+    <div class="code">
+      <div class="bar"><span class="dot" style="background:#e5534b"></span><span class="dot" style="background:#e3a008"></span><span class="dot" style="background:#76b900"></span><span class="name">qualify</span><button class="copy">copy</button></div>
+<pre><span class="p">$</span> <span class="a">unset GITLAB_TOKEN</span>   <span class="c"># goreleaser fails if it coexists with GITHUB_TOKEN</span>
+<span class="p">$</span> make qualify
+<span class="c"># = test-coverage → lint → tuning-check → e2e → scan → license-check</span></pre>
+    </div>
+    <div class="note">
+      <span class="t info">Why it matters</span>
+      When CI is red, the failing job name maps 1:1 to one of these sub-targets — so you know exactly which local command to rerun.
+      Coverage: <strong>80% floor</strong> from <code class="inl">.settings.yaml</code>; <code class="inl">validators/</code> is deliberately excluded from the profile.
+    </div>
+    <p class="hint">Hardware-free end-to-end: <code class="inl">make kwok-e2e RECIPE=eks-training</code> renders + deploys against a simulated cluster.</p>
+  </div>
+</section>
+
+<!-- 5.2 CI topology -->
+<section class="slide" data-title="M5 · Dev &amp; CI">
+  <div class="slide-inner">
+    <div class="label">20 · CI topology</div>
+    <h2>What gates a PR vs what runs on tag</h2>
+    <table class="r">
+      <thead><tr><th>Workflow</th><th>Role</th></tr></thead>
+      <tbody>
+        <tr><td><code>qualification.yaml</code></td><td>reusable engine: test / lint / cli-e2e / e2e / security-scan</td></tr>
+        <tr><td class="ok"><code>merge-gate.yaml</code></td><td><strong>the PR gate</strong> — classifies the diff, runs the suite + CodeQL/malware/actionlint/freshness, funnels into a fail-closed <code>gate</code> job</td></tr>
+        <tr><td><code>on-push.yaml</code></td><td>runs on main; publishes validator <code>:edge</code> + <code>sha-&lt;commit&gt;</code> images</td></tr>
+        <tr><td><code>on-tag.yaml</code></td><td>the release pipeline (candidate → scan → attest → promote)</td></tr>
+      </tbody>
+    </table>
+    <div class="note">
+      <span class="t info">Fail-closed by design</span>
+      If <code class="inl">check-paths</code> errors, downstream jobs <em>skip</em> — so the <code class="inl">gate</code> explicitly fails when check-paths didn't succeed. Gate red but every visible job green? Look at check-paths first.
+    </div>
+  </div>
+</section>
+
+<!-- 5.3 hygiene + release -->
+<section class="slide" data-title="M5 · Dev &amp; CI">
+  <div class="slide-inner">
+    <div class="label">21 · Ship it</div>
+    <h2>PR hygiene &amp; the release runbook</h2>
+    <div class="grid2">
+      <div class="mini"><h4>Every commit</h4><p><code class="inl">git commit -s -S</code> — <code class="inl">-s</code> DCO sign-off + <code class="inl">-S</code> crypto signature. A branch ruleset <strong>rejects unsigned pushes before review</strong>. Rebase onto main, squash to one commit, add a <code class="inl">theme/*</code> label.</p></div>
+      <div class="mini"><h4>Release = everything on main</h4><p><code class="inl">make qualify</code> → <code class="inl">make bump-patch</code> (tags HEAD, no commit) → <code class="inl">on-tag.yaml</code>: candidate images → vuln scan → SLSA L3 attest → promote aliases → GitHub release.</p></div>
+    </div>
+    <div class="note">
+      <span class="t info">Two docs-hygiene gates</span>
+      <code class="inl">AGENTS.md</code> must stay a synced mirror of <code class="inl">.claude/CLAUDE.md</code> (<code class="inl">check-agents-sync</code>). Any chart/registry change needs <code class="inl">make bom-docs</code> committed. Recovery is always "Re-run failed jobs," never manual alias repointing.
+    </div>
+  </div>
+</section>
+
+<!-- CLOSE -->
+<section class="slide center" data-title="Recap">
+  <div class="slide-inner">
+    <div class="label">One system</div>
+    <h1>The whole model, in one line</h1>
+    <p class="lede"><strong>Snapshot → Recipe → Validate → Bundle</strong>, generated not deployed, reproducible and verifiable —
+      with a public dashboard and two cryptographic proofs behind every recipe.</p>
+    <div class="chips">
+      <span class="chip"><b>M1</b> generator, 4 stages</span>
+      <span class="chip"><b>M2</b> registry/overlay/mixin</span>
+      <span class="chip"><b>M3</b> validate + dashboard</span>
+      <span class="chip"><b>M4</b> two proofs</span>
+      <span class="chip"><b>M5</b> qualify = CI</span>
+    </div>
+    <div class="footlinks">
+      <a href="onboarding.md">facilitator guide</a> ·
+      <a href="onboarding.sh">guided demo</a> ·
+      <a href="onboarding-cheatsheet.md">cheat sheet</a> ·
+      <a href="../docs/user/tutorial.md">tutorial</a> ·
+      <a href="https://validation.aicr.run">validation.aicr.run</a>
+    </div>
+  </div>
+</section>
+
+<div class="deck-bottom">
+  <button class="navbtn" id="prev" aria-label="Previous slide">‹</button>
+  <div class="meter">
+    <span id="counter">1 / 29</span>
+    <span class="hint">←  →  ·  Space  ·  F fullscreen</span>
+  </div>
+  <button class="navbtn" id="next" aria-label="Next slide">›</button>
+</div>
+<div class="progress"><i id="pfill"></i></div>
+
+<script>
+  var slides = Array.prototype.slice.call(document.querySelectorAll('.slide'));
+  var counter = document.getElementById('counter');
+  var pfill = document.getElementById('pfill');
+  var sect = document.getElementById('sect');
+  var i = 0;
+
+  function clamp(n) { return Math.max(0, Math.min(slides.length - 1, n)); }
+  function show(n) {
+    i = clamp(n);
+    slides.forEach(function (s, k) { s.classList.toggle('active', k === i); });
+    counter.textContent = (i + 1) + ' / ' + slides.length;
+    pfill.style.width = ((i + 1) / slides.length * 100) + '%';
+    sect.textContent = slides[i].getAttribute('data-title') || '';
+    var h = '#' + (i + 1);
+    if (location.hash !== h) history.replaceState(null, '', h);
+    slides[i].querySelector('.slide-inner').scrollTop = 0;
+  }
+  function next() { show(i + 1); }
+  function prev() { show(i - 1); }
+
+  document.getElementById('next').addEventListener('click', next);
+  document.getElementById('prev').addEventListener('click', prev);
+
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'PageDown' || e.key === 'n') { e.preventDefault(); next(); }
+    else if (e.key === 'ArrowLeft' || e.key === 'PageUp' || e.key === 'p') { e.preventDefault(); prev(); }
+    else if (e.key === 'Home') { e.preventDefault(); show(0); }
+    else if (e.key === 'End') { e.preventDefault(); show(slides.length - 1); }
+    else if (e.key === 'f' || e.key === 'F') {
+      if (!document.fullscreenElement) { (document.documentElement.requestFullscreen || function () {}).call(document.documentElement); }
+      else { (document.exitFullscreen || function () {}).call(document); }
+    }
+  });
+
+  // Copy buttons.
+  document.querySelectorAll('.code .copy').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var pre = btn.closest('.code').querySelector('pre');
+      navigator.clipboard.writeText(pre.innerText).then(function () {
+        var prev = btn.textContent; btn.textContent = 'copied';
+        setTimeout(function () { btn.textContent = prev; }, 1200);
+      });
+    });
+  });
+
+  var start = parseInt((location.hash || '').slice(1), 10);
+  show(isNaN(start) ? 0 : start - 1);
+  window.addEventListener('hashchange', function () {
+    var n = parseInt((location.hash || '').slice(1), 10);
+    if (!isNaN(n) && n - 1 !== i) show(n - 1);
+  });
+</script>
+</body>
+</html>

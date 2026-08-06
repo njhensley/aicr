@@ -6,6 +6,10 @@ Runbooks for testing and demonstrating AICR end-to-end workflows on live cluster
 
 | Demo | Description |
 |------|-------------|
+| [onboarding.md](onboarding.md) | **Start here** — AICR onboarding curriculum (facilitator guide): 5 modules, talk track, exercises, all linked to repo resources |
+| [onboarding-slides.html](onboarding-slides.html) | AICR onboarding — slide deck (self-contained HTML, 5 module sections) |
+| [onboarding.sh](onboarding.sh) | Guided end-to-end walkthrough — **laptop-only** (recipe → inspect → query → bundle → verify → validate; no cluster) |
+| [onboarding-cheatsheet.md](onboarding-cheatsheet.md) | One-page desk reference (mental model, commands, "where do I look when X" table) |
 | [cuj1-training.md](cuj1-training.md) | CUJ1 (training) - EKS + GKE end-to-end, plus a config-driven GKE + signed-evidence variant |
 | [cuj1-slinky-slurm.md](cuj1-slinky-slurm.md) | CUJ1 - Slinky Slurm on EKS / GKE / Kind (recipe → bundle → validate → `srun`) |
 | [cuj2-inference.md](cuj2-inference.md) | CUJ2 (inference) - EKS + GKE end-to-end with the Dynamo platform |
