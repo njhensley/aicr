@@ -752,3 +752,31 @@ spec:
 		}
 	}
 }
+
+func TestArtifactExternalOnlyCapture(t *testing.T) {
+	files, inventory := artifactCatalogFixture()
+	files[artifactInventoryPath] = inventory
+	dir := writeArtifactCatalog(t, files)
+	provider, err := NewLayeredDataProvider(NewEmbeddedDataProvider(GetEmbeddedFS(), ""), LayeredProviderConfig{ExternalDir: dir, ExternalOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	composed, err := ComposeArtifacts(t.Context(), provider, artifact.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := composed.(*ArtifactProvider)
+	if len(got.embedded) != 0 {
+		t.Fatal("external-only capture retained embedded files")
+	}
+	want, err := composeCapturedArtifacts(t.Context(), map[string][]byte{}, files, inventory, artifact.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.provenance.BaseCatalogDigest != want.provenance.BaseCatalogDigest || got.provenance.BindingsDigest != want.provenance.BindingsDigest {
+		t.Fatal("external-only provenance differs from the external files alone")
+	}
+	if len(got.bindings.Charts) != 2 || len(got.bindings.Images) != 2 {
+		t.Fatalf("embedded bindings leaked: %+v", got.bindings)
+	}
+}
